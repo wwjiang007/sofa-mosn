@@ -32,9 +32,11 @@ import (
 	"github.com/alipay/sofa-mosn/pkg/log"
 	"github.com/alipay/sofa-mosn/pkg/mtls"
 	"github.com/alipay/sofa-mosn/pkg/protocol"
+	mhttp2 "github.com/alipay/sofa-mosn/pkg/protocol/http2"
 	str "github.com/alipay/sofa-mosn/pkg/stream"
 	"github.com/alipay/sofa-mosn/pkg/types"
 	"golang.org/x/net/http2"
+	"net"
 )
 
 func init() {
@@ -67,16 +69,20 @@ type streamConnection struct {
 	context context.Context
 
 	protocol      types.Protocol
+	protocols     types.Protocols
 	connection    types.Connection
 	http2Conn     *http2.ClientConn
 	asMutex       sync.Mutex
 	connCallbacks types.ConnectionEventListener
+
+	net.Conn
 
 	logger log.Logger
 }
 
 // types.StreamConnection
 func (conn *streamConnection) Dispatch(buffer types.IoBuffer) {
+	conn.protocols.Decode(conn.context, buffer, conn)
 }
 
 func (conn *streamConnection) Protocol() types.Protocol {
@@ -85,6 +91,29 @@ func (conn *streamConnection) Protocol() types.Protocol {
 
 func (conn *streamConnection) GoAway() {
 	// todo
+}
+
+func (conn *streamConnection) OnDecodeHeader(streamID string, headers types.HeaderMap, endStream bool) types.FilterStatus {
+	if endStream {
+		return types.Stop
+	}
+	return types.Continue
+}
+
+func (conn *streamConnection) OnDecodeData(streamID string, data types.IoBuffer, endStream bool) types.FilterStatus {
+
+	return types.Stop
+}
+
+func (conn *streamConnection) OnDecodeTrailer(streamID string, trailers types.HeaderMap) types.FilterStatus {
+	return types.Stop
+}
+
+func (conn *streamConnection) OnDecodeError(err error, header types.HeaderMap) {
+}
+
+func (conn *streamConnection) Read(b []byte) (n int, err error) {
+
 }
 
 // types.ClientStreamConnection
@@ -141,6 +170,7 @@ func newServerStreamConnection(context context.Context, connection types.Connect
 		streamConnection: streamConnection{
 			context:    context,
 			connection: connection,
+			Conn: connection.RawConn(),
 		},
 		serverStreamConnCallbacks: callbacks,
 	}
@@ -154,7 +184,8 @@ func newServerStreamConnection(context context.Context, connection types.Connect
 		}
 	}
 
-	server.ServeConn(connection.RawConn(), &http2.ServeConnOpts{
+	ssc.protocols = mhttp2.NewProtocols()
+	go server.ServeConn(ssc, &http2.ServeConnOpts{
 		Handler: ssc,
 	})
 
