@@ -17,6 +17,8 @@
 
 package v2
 
+import "time"
+
 type HealthCheckConfig struct {
 	Protocol             string         `json:"protocol"`
 	TimeoutConfig        DurationConfig `json:"timeout"`
@@ -76,12 +78,21 @@ type RouterConfig struct {
 }
 
 type RouterActionConfig struct {
-	ClusterName      string            `json:"cluster_name"`
-	ClusterHeader    string            `json:"cluster_header"`
-	WeightedClusters []WeightedCluster `json:"weighted_clusters"`
-	MetadataConfig   MetadataConfig    `json:"metadata_match"`
-	TimeoutConfig    DurationConfig    `json:"timeout"`
-	RetryPolicy      *RetryPolicy      `json:"retry_policy"`
+	ClusterName      string               `json:"cluster_name"`
+	ClusterHeader    string               `json:"cluster_header"`
+	WeightedClusters []WeightedCluster    `json:"weighted_clusters"`
+	MetadataConfig   MetadataConfig       `json:"metadata_match"`
+	TimeoutConfig    DurationConfig       `json:"timeout"`
+	RetryPolicy      *RetryPolicy         `json:"retry_policy"`
+	UseWebSocket     bool                 `json:"use_websocket"`
+	WebSocketConfig  WebSocketProxyConfig `json:"websocket_config"`
+}
+
+// WebSocketProxyConfig
+type WebSocketProxyConfig struct {
+	StatPrefix         string
+	IdleTimeout        *time.Duration
+	MaxConnectAttempts uint32
 }
 
 type ClusterWeightConfig struct {

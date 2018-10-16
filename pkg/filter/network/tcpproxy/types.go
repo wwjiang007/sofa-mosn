@@ -46,6 +46,19 @@ type DownstreamCallbacks interface {
 	types.ConnectionEventListener
 }
 
+// UpstreamEventIterator for webSocket support
+type UpstreamEventIterator string
+
+const (
+	EventContinue UpstreamEventIterator = "Continue"
+	EventStop     UpstreamEventIterator = "Stop"
+)
+
+// UpstreamEventCallbacks for webSocket support
+type UpstreamEventCallbacks interface {
+	OnEvent(event types.ConnectionEvent) UpstreamEventIterator
+}
+
 // UpstreamFailureReason used to define Upstream Failure Reason
 type UpstreamFailureReason string
 

@@ -27,6 +27,7 @@ const (
 	HTTP1     types.Protocol = "Http1"
 	HTTP2     types.Protocol = "Http2"
 	Xprotocol types.Protocol = "X"
+	WebSocket types.Protocol = "WebSocket"
 )
 
 // Host key for routing in MOSN Header

@@ -37,13 +37,14 @@ import (
 
 // ReadFilter
 type proxy struct {
-	config              ProxyConfig
-	clusterManager      types.ClusterManager
-	readCallbacks       types.ReadFilterCallbacks
-	upstreamConnection  types.ClientConnection
-	requestInfo         types.RequestInfo
-	upstreamCallbacks   UpstreamCallbacks
-	downstreamCallbacks DownstreamCallbacks
+	config                 ProxyConfig
+	clusterManager         types.ClusterManager
+	readCallbacks          types.ReadFilterCallbacks
+	upstreamConnection     types.ClientConnection
+	requestInfo            types.RequestInfo
+	upstreamCallbacks      UpstreamCallbacks
+	upstreamEventCallbacks UpstreamEventCallbacks
+	downstreamCallbacks    DownstreamCallbacks
 
 	upstreamConnecting bool
 
@@ -64,6 +65,26 @@ func NewProxy(ctx context.Context, config *v2.TCPProxy, clusterManager types.Clu
 	p.downstreamCallbacks = &downstreamCallbacks{
 		proxy: p,
 	}
+	p.upstreamEventCallbacks = nil
+
+	return p
+}
+
+func NewProxyForWebSocket(ctx context.Context, config *v2.TCPProxy, clusterManager types.ClusterManager, eventCb UpstreamEventCallbacks) Proxy {
+	p := &proxy{
+		config:         NewProxyConfig(config),
+		clusterManager: clusterManager,
+		requestInfo:    network.NewRequestInfo(),
+		accessLogs:     ctx.Value(types.ContextKeyAccessLogs).([]types.AccessLog),
+	}
+
+	p.upstreamCallbacks = &upstreamCallbacks{
+		proxy: p,
+	}
+	p.downstreamCallbacks = &downstreamCallbacks{
+		proxy: p,
+	}
+	p.upstreamEventCallbacks = eventCb
 
 	return p
 }
@@ -169,6 +190,9 @@ func (p *proxy) onUpstreamData(buffer types.IoBuffer) {
 }
 
 func (p *proxy) onUpstreamEvent(event types.ConnectionEvent) {
+	if p.upstreamEventCallbacks.OnEvent(event) == EventStop {
+		return
+	}
 	switch event {
 	case types.RemoteClose:
 		p.finalizeUpstreamConnectionStats()
