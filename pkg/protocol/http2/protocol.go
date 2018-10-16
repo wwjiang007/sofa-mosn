@@ -18,37 +18,27 @@
 package http2
 
 import (
-"context"
-"errors"
-
-"github.com/alipay/sofa-mosn/pkg/log"
-"github.com/alipay/sofa-mosn/pkg/types"
+	"context"
+	"github.com/alipay/sofa-mosn/pkg/types"
 )
 
+const http2frameHeaderLen = 9
+const clientPreface = "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n"
+
 type protocols struct {
+	preface     bool
+	parseHeader bool
+	header [http2frameHeaderLen]byte
 }
 
 func NewProtocols() types.Protocols {
-	return &protocols{}
-}
-
-type Header struct {
-	data types.IoBuffer
-}
-
-func (h *Header) Set (key, value string) {
-}
-
-func (h *Header) Get (key string) (string, bool) {
-}
-
-func (h *Header) Del (key string) {
-}
-
-func (h *Header) Range (f func(key, value string) bool) {
+	return &protocols{
+		preface:     false,
+	}
 }
 
 func (p *protocols) EncodeHeaders(context context.Context, headers types.HeaderMap) (types.IoBuffer, error) {
+	return nil, nil
 }
 
 func (p *protocols) EncodeData(context context.Context, data types.IoBuffer) types.IoBuffer {
@@ -60,7 +50,44 @@ func (p *protocols) EncodeTrailers(context context.Context, trailers types.Heade
 }
 
 func (p *protocols) Decode(context context.Context, data types.IoBuffer, filter types.DecodeFilter) {
-	for data.Len() > 1 {
-		filter.OnDecodeData("", data, false)
+	buf := data.Bytes()
+	size := data.Len()
+	off := 0
+	if !p.preface {
+		if size >= len(clientPreface) {
+			filter.OnDecodeData("", data, false)
+			off += len(clientPreface)
+			p.preface = true
+			p.parseHeader = true
+		} else {
+			return
+		}
+	}
+
+	for {
+		if p.parseHeader {
+			if off + http2frameHeaderLen > size {
+				break
+			}
+			filter.OnDecodeData("", data, false)
+			p.parseHeader = false
+			copyHeader(&p.header, buf[off:])
+			off += http2frameHeaderLen
+		} else {
+			b := p.header
+			length := (uint32(b[0])<<16 | uint32(b[1])<<8 | uint32(b[2]))
+			if off + int(length) > size {
+				break
+			}
+			filter.OnDecodeData("", data, false)
+			p.parseHeader = true
+			off += int(length)
+		}
+	}
+}
+
+func copyHeader(header *[http2frameHeaderLen]byte, b []byte) {
+	for i := 0; i < http2frameHeaderLen; i++ {
+           header[i] = b[i]
 	}
 }

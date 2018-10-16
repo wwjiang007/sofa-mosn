@@ -460,6 +460,7 @@ func (al *activeListener) OnNewConnection(ctx context.Context, conn types.Connec
 	al.logger.Debugf("new downstream connection %d accepted", conn.ID())
 
 	// todo: this hack is due to http2 protocol process. golang http2 provides a io loop to read/write stream
+	al.disableConnIo = false
 	if !al.disableConnIo {
 		// start conn loops first
 		conn.Start(ctx)

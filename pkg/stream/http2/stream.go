@@ -76,6 +76,7 @@ type streamConnection struct {
 	connCallbacks types.ConnectionEventListener
 
 	net.Conn
+	ReadBufferChan chan types.IoBuffer
 
 	logger log.Logger
 }
@@ -101,8 +102,9 @@ func (conn *streamConnection) OnDecodeHeader(streamID string, headers types.Head
 }
 
 func (conn *streamConnection) OnDecodeData(streamID string, data types.IoBuffer, endStream bool) types.FilterStatus {
-
-	return types.Stop
+	conn.ReadBufferChan <- data
+	<-conn.ReadBufferChan
+	return types.Continue
 }
 
 func (conn *streamConnection) OnDecodeTrailer(streamID string, trailers types.HeaderMap) types.FilterStatus {
@@ -112,8 +114,20 @@ func (conn *streamConnection) OnDecodeTrailer(streamID string, trailers types.He
 func (conn *streamConnection) OnDecodeError(err error, header types.HeaderMap) {
 }
 
-func (conn *streamConnection) Read(b []byte) (n int, err error) {
+func (conn *streamConnection) Read(b []byte) (int, error) {
+	data := <-conn.ReadBufferChan
+	size := copy(b, data.Bytes())
+	data.Drain(size)
+	log.DefaultLogger.Errorf("http2 server Read : %v", b)
+	conn.ReadBufferChan <- nil
+	return size, nil
+}
 
+func (conn *streamConnection) Write(b []byte) (int, error) {
+	buf := buffer.NewIoBufferBytes(b)
+	err := conn.connection.Write(buf)
+	log.DefaultLogger.Errorf("http2 server Write : %v", b)
+	return len(b), err
 }
 
 // types.ClientStreamConnection
@@ -129,11 +143,13 @@ func newClientStreamConnection(context context.Context, connection types.ClientC
 	log.DefaultLogger.Tracef("new http2 client stream connection")
 	return &clientStreamConnection{
 		streamConnection: streamConnection{
-			context:       context,
-			connection:    connection,
-			http2Conn:     context.Value(H2ConnKey).(*http2.ClientConn),
-			connCallbacks: connCallbacks,
-			logger:        log.ByContext(context),
+			context:        context,
+			connection:     connection,
+			http2Conn:      context.Value(H2ConnKey).(*http2.ClientConn),
+			connCallbacks:  connCallbacks,
+			logger:         log.ByContext(context),
+			Conn:           connection.RawConn(),
+			ReadBufferChan: make(chan types.IoBuffer),
 		},
 		streamConnCallbacks: streamConnCallbacks,
 	}
@@ -165,12 +181,13 @@ type serverStreamConnection struct {
 func newServerStreamConnection(context context.Context, connection types.Connection,
 	callbacks types.ServerStreamConnectionEventListener) types.ServerStreamConnection {
 	log.DefaultLogger.Tracef("new http2 server stream connection")
-	connection.SetReadDisable(true)
+	connection.SetReadDisable(false)
 	ssc := &serverStreamConnection{
 		streamConnection: streamConnection{
-			context:    context,
-			connection: connection,
-			Conn: connection.RawConn(),
+			context:        context,
+			connection:     connection,
+			Conn:           connection.RawConn(),
+			ReadBufferChan: make(chan types.IoBuffer),
 		},
 		serverStreamConnCallbacks: callbacks,
 	}

@@ -101,6 +101,7 @@ func NewProxy(ctx context.Context, config *v2.Proxy, clusterManager types.Cluste
 	proxy.listenerStats = newListenerStats(listenerName)
 
 	if routersWrapper := router.GetRoutersMangerInstance().GetRouterWrapperByListenerName(proxy.config.RouterConfigName); routersWrapper != nil {
+		log.DefaultLogger.Errorf("routername %v", proxy.config.RouterConfigName)
 		proxy.routersWrapper = routersWrapper
 	} else {
 		log.DefaultLogger.Errorf("RouterConfigName:%s doesn't exit", proxy.config.RouterConfigName)

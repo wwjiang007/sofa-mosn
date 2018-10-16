@@ -250,6 +250,8 @@ func (s *downStream) doReceiveHeaders(filter *activeStreamReceiverFilter, header
 
 	log.DefaultLogger.Tracef("before active stream route")
 	if s.proxy.routersWrapper == nil || s.proxy.routersWrapper.GetRouters() == nil {
+		test, _ := headers.Get("test")
+        log.DefaultLogger.Errorf("http2 header test: %s",test)
 		log.DefaultLogger.Errorf("doReceiveHeaders error: routersWrapper or routers in routersWrapper is nil")
 		s.requestInfo.SetResponseFlag(types.NoRouteFound)
 		s.sendHijackReply(types.RouterUnavailableCode, headers)
