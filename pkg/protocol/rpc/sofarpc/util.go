@@ -12,15 +12,15 @@ import (
 func NewResponse(ctx context.Context, cmd SofaRpcCmd, respStatus int16) (SofaRpcCmd, error) {
 	switch c := cmd.(type) {
 	case *BoltRequest:
-		return &BoltResponse{
-			Protocol:       c.Protocol,
-			CmdType:        RESPONSE,
-			CmdCode:        RPC_RESPONSE,
-			Version:        c.Version,
-			ReqID:          c.ReqID,
-			Codec:          c.Codec,
-			ResponseStatus: respStatus,
-		}, nil
+		resp := AllocResp(ctx)
+		resp.Protocol = c.Protocol
+		resp.CmdType = RESPONSE
+		resp.CmdCode = RPC_RESPONSE
+		resp.Version = c.Version
+		resp.ReqID = c.ReqID
+		resp.Codec = c.Codec
+		resp.ResponseStatus = respStatus
+		return resp, nil
 	case *BoltRequestV2:
 		return &BoltResponseV2{
 			BoltResponse: BoltResponse{
@@ -42,18 +42,29 @@ func NewResponse(ctx context.Context, cmd SofaRpcCmd, respStatus int16) (SofaRpc
 }
 
 func Clone(ctx context.Context, origin SofaRpcCmd) (SofaRpcCmd, error) {
-	//TODO: reuse req/resp struct
 	switch c := origin.(type) {
 	case *BoltRequest:
-		copy := &BoltRequest{}
+		copy := AllocReq(ctx)
+		copyHeader := copy.RequestHeader
 		*copy = *c
+
+		for k, v := range origin.Header() {
+			copyHeader[k] = v
+		}
+		copy.RequestHeader = copyHeader
+		return copy, nil
+	case *BoltResponse:
+		copy := AllocResp(ctx)
+		copyHeader := copy.ResponseHeader
+		*copy = *c
+
+		for k, v := range origin.Header() {
+			copyHeader[k] = v
+		}
+		copy.ResponseHeader = copyHeader
 		return copy, nil
 	case *BoltRequestV2:
 		copy := &BoltRequestV2{}
-		*copy = *c
-		return copy, nil
-	case *BoltResponse:
-		copy := &BoltResponse{}
 		*copy = *c
 		return copy, nil
 	case *BoltResponseV2:
@@ -100,8 +111,7 @@ func DeserializeBoltRequest(ctx context.Context, request *BoltRequest) {
 
 	//protocolCtx := protocol.ProtocolBuffersByContext(ctx)
 	//request.RequestHeader = protocolCtx.GetReqHeaders()
-
-	request.RequestHeader = make(map[string]string, 8)
+	//request.RequestHeader = make(map[string]string, 8)
 
 	//logger
 	logger := log.ByContext(ctx)
@@ -124,8 +134,7 @@ func DeserializeBoltResponse(ctx context.Context, response *BoltResponse) {
 
 	//protocolCtx := protocol.ProtocolBuffersByContext(ctx)
 	//response.ResponseHeader = protocolCtx.GetRspHeaders()
-
-	response.ResponseHeader = make(map[string]string, 8)
+	//response.ResponseHeader = make(map[string]string, 8)
 
 	//deserialize header
 	serializeIns.DeSerialize(response.HeaderMap, &response.ResponseHeader)

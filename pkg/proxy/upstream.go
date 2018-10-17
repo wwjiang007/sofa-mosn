@@ -24,14 +24,13 @@ import (
 	"github.com/alipay/sofa-mosn/pkg/log"
 	"github.com/alipay/sofa-mosn/pkg/types"
 	"github.com/alipay/sofa-mosn/pkg/protocol"
+	"github.com/alipay/sofa-mosn/pkg/buffer"
 )
 
 // types.StreamEventListener
 // types.StreamReceiver
 // types.PoolEventListener
 type upstreamRequest struct {
-	ctx           context.Context
-
 	proxy         *proxy
 	element       *list.Element
 	downStream    *downStream
@@ -84,9 +83,9 @@ func (r *upstreamRequest) ResetStream(reason types.StreamResetReason) {
 
 // types.StreamReceiver
 // Method to decode upstream's response message
-func (r *upstreamRequest) OnReceiveHeaders(context context.Context, headers types.HeaderMap, endStream bool) {
+func (r *upstreamRequest) OnReceiveHeaders(ctx context.Context, headers types.HeaderMap, endStream bool) {
 	//buffer.TransmitBufferPoolContext(r.downStream.context, context)
-	r.ctx = context
+	buffer.Move(ctx, r.downStream.context)
 
 	workerPool.Offer(&receiveHeadersEvent{
 		streamEvent: streamEvent{

@@ -69,7 +69,7 @@ func (b *boltv1conv) MapToCmd(ctx context.Context, headers map[string]string) (s
 
 		//sofabuffers := sofarpc.SofaProtocolBuffersByContext(ctx)
 		//request := &sofabuffers.BoltEncodeReq
-		request := &sofarpc.BoltRequest{}
+		request := sofarpc.AllocReq(ctx)
 		request.Protocol = protocolCode
 		request.CmdType = cmdType
 		request.CmdCode = cmdCode
@@ -81,6 +81,7 @@ func (b *boltv1conv) MapToCmd(ctx context.Context, headers map[string]string) (s
 		//request.HeaderLen = headerLength
 		request.ContentLen = contentLength
 		request.RequestClass = className
+		//TODO should copy
 		request.RequestHeader = headers
 		return request, nil
 	} else if cmdType == sofarpc.RESPONSE {
@@ -91,7 +92,7 @@ func (b *boltv1conv) MapToCmd(ctx context.Context, headers map[string]string) (s
 
 		//sofabuffers := sofarpc.SofaProtocolBuffersByContext(ctx)
 		//response := &sofabuffers.BoltEncodeRsp
-		response := &sofarpc.BoltResponse{}
+		response := sofarpc.AllocResp(ctx)
 		response.Protocol = protocolCode
 		response.CmdType = cmdType
 		response.CmdCode = cmdCode
@@ -103,8 +104,9 @@ func (b *boltv1conv) MapToCmd(ctx context.Context, headers map[string]string) (s
 		//response.HeaderLen = headerLength
 		response.ContentLen = contentLength
 		response.ResponseClass = className
-		response.ResponseHeader = headers
 		response.ResponseTimeMillis = responseTime
+		//TODO should copy
+		response.ResponseHeader = headers
 		return response, nil
 	}
 

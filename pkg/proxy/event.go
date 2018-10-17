@@ -93,6 +93,7 @@ func eventProcess(shard int, streamMap map[uint32]bool, event interface{}) {
 		e := event.(*stopEvent)
 		//log.DefaultLogger.Errorf("[stop] %d %d %s", shard, e.direction, e.streamID)
 		e.stream.GiveStream()
+
 		delete(streamMap, e.streamID)
 	case *resetEvent:
 		e := event.(*resetEvent)

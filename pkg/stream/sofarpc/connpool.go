@@ -155,13 +155,14 @@ type activeClient struct {
 	totalStream        uint64
 }
 
-func newActiveClient(context context.Context, pool *connPool) *activeClient {
+func newActiveClient(ctx context.Context, pool *connPool) *activeClient {
 	ac := &activeClient{
 		pool: pool,
 	}
 
-	data := pool.host.CreateConnection(context)
-	codecClient := pool.createCodecClient(context, data)
+	data := pool.host.CreateConnection(ctx)
+	connCtx := context.WithValue(context.Background(), types.ContextKeyConnectionID, data.Connection.ID())
+	codecClient := pool.createCodecClient(connCtx, data)
 	codecClient.AddConnectionCallbacks(ac)
 	codecClient.SetCodecClientCallbacks(ac)
 	codecClient.SetCodecConnectionCallbacks(ac)

@@ -57,7 +57,7 @@ func encodeRequest(ctx context.Context, cmd *sofarpc.BoltRequest) (types.IoBuffe
 
 	//protocolCtx := protocol.ProtocolBuffersByContext(ctx)
 	//buf := protocolCtx.GetReqHeader(size)
-	buf := buffer.NewIoBuffer(size)
+	buf := buffer.GetIoBuffer(size)
 
 	b[0] = cmd.Protocol
 	buf.Write(b[0:1])
@@ -116,7 +116,7 @@ func encodeResponse(ctx context.Context, cmd *sofarpc.BoltResponse) (types.IoBuf
 	//buf := sofarpc.GetBuffer(context, size)
 	//protocolCtx := protocol.ProtocolBuffersByContext(ctx)
 	//buf := protocolCtx.GetRspHeader(size)
-	buf := buffer.NewIoBuffer(size)
+	buf := buffer.GetIoBuffer(size)
 
 	b[0] = cmd.Protocol
 	buf.Write(b[0:1])
@@ -207,7 +207,7 @@ func (c *boltCodec) Decode(ctx context.Context, data types.IoBuffer) (interface{
 
 				//sofabuffers := sofarpc.SofaProtocolBuffersByContext(ctx)
 				//request := &sofabuffers.BoltReq
-				request := &sofarpc.BoltRequest{}
+				request := sofarpc.AllocReq(ctx)
 				request.Protocol = sofarpc.PROTOCOL_CODE_V1
 				request.CmdType = cmdType
 				request.CmdCode = int16(cmdCode)
@@ -289,7 +289,7 @@ func (c *boltCodec) Decode(ctx context.Context, data types.IoBuffer) (interface{
 
 				//sofabuffers := sofarpc.SofaProtocolBuffersByContext(ctx)
 				//response := &sofabuffers.BoltRsp
-				response := &sofarpc.BoltResponse{}
+				response := sofarpc.AllocResp(ctx)
 				response.Protocol = sofarpc.PROTOCOL_CODE_V1
 				response.CmdType = cmdType
 				response.CmdCode = int16(cmdCode)

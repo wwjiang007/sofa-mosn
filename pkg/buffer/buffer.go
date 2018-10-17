@@ -30,7 +30,7 @@ const maxPoolSize = 1
 
 // Register the bufferpool's name
 const (
-	Protocol = iota
+	Protocol     = iota
 	SofaProtocol
 	Stream
 	SofaStream
@@ -38,12 +38,13 @@ const (
 	Bytes
 	End
 )
+
 //
 //var nullBufferCtx [End]interface{}
 //
 var (
-	index                   uint32
-	poolSize                = runtime.NumCPU()
+	index    uint32
+	poolSize = runtime.NumCPU()
 	//bufferPoolContainers    [maxPoolSize]bufferPoolContainer
 	//bufferPoolCtxContainers [maxPoolSize]bufferPoolCtxContainer
 )
@@ -110,6 +111,7 @@ func bufferPoolIndex() int {
 	i = i % uint32(maxPoolSize) % uint32(poolSize)
 	return int(i)
 }
+
 //
 //// newBufferPoolCtx returns PoolCtx
 //func newBufferPoolCtx() (ctx *PoolCtx) {
@@ -250,6 +252,13 @@ func NewBufferCtx(ctx context.Context) context.Context {
 func GiveBufferCtx(ctx context.Context) {
 	if ctx != nil && ctx.Value(types.ContextKeyBufferCtx) != nil {
 		bufferCtx := ctx.Value(types.ContextKeyBufferCtx).(*bufferContext)
+
+		// for debug
+		//logger := log.ByContext(ctx)
+		//connID := ctx.Value(types.ContextKeyConnectionID)
+		//streamID := ctx.Value(types.ContextKeyStreamID)
+		//logger.Debugf("conn %d, stream %d, release %d res", connID, streamID, len(bufferCtx.freeList))
+
 		bufferCtx.release()
 	}
 }
@@ -260,6 +269,38 @@ func AppendReusable(ctx context.Context, reusable ... Reusable) error {
 		return ErrNoBufferCtx
 	}
 
+	// for debug
+	//logger := log.ByContext(ctx)
+	//connID := ctx.Value(types.ContextKeyConnectionID)
+	//streamID := ctx.Value(types.ContextKeyStreamID)
+	//for i, _ := range reusable {
+	//	logger.Debugf("conn %d, stream %d, append free list %+v", connID, streamID, reusable[i])
+	//}
+
 	bufferCtx.append(reusable...)
 	return nil
+}
+
+func Move(src, dst context.Context) {
+	srcBufferCtx := getBufferCtx(src)
+	dstBufferCtx := getBufferCtx(dst)
+	if srcBufferCtx == nil || dstBufferCtx == nil {
+		return
+	}
+
+	// copy src to dst
+	dstBufferCtx.freeList = append(dstBufferCtx.freeList, srcBufferCtx.freeList...)
+	// for debug
+	//logger := log.ByContext(dst)
+	//connID := dst.Value(types.ContextKeyConnectionID)
+	//streamID := dst.Value(types.ContextKeyStreamID)
+	//for i, _ := range srcBufferCtx.freeList {
+	//	logger.Debugf("conn %d, stream %d, move free list from us to ds %+v", connID, streamID, srcBufferCtx.freeList[i])
+	//}
+
+	// reset src free list
+	srcBufferCtx.freeList = srcBufferCtx.freeList[:0]
+
+	// give back to pool
+	pool.Put(srcBufferCtx)
 }
