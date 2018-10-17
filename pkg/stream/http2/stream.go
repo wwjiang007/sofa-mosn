@@ -124,7 +124,8 @@ func (conn *streamConnection) Read(b []byte) (int, error) {
 }
 
 func (conn *streamConnection) Write(b []byte) (int, error) {
-	buf := buffer.NewIoBufferBytes(b)
+	buf := buffer.NewIoBuffer(len(b))
+	buf.Write(b)
 	err := conn.connection.Write(buf)
 	log.DefaultLogger.Errorf("http2 server Write : %v", b)
 	return len(b), err
@@ -352,9 +353,13 @@ func (s *clientStream) AppendData(context context.Context, data types.IoBuffer, 
 		s.request = new(http.Request)
 	}
 
-	s.request.Method = http.MethodPost
-	s.request.Body = &IoBufferReadCloser{
-		buf: data,
+	if data.Len() == 0 {
+		s.request.Method = http.MethodGet
+	} else {
+		s.request.Method = http.MethodPost
+		s.request.Body = &IoBufferReadCloser{
+			buf: data,
+		}
 	}
 
 	log.DefaultLogger.Tracef("http2 client stream encode data,data = %v", data.String())
@@ -590,7 +595,7 @@ func (s *serverStream) handleRequest() {
 
 		//remove detect
 		//if s.element != nil {
-		buf := buffer.NewIoBuffer(1024)
+		buf := buffer.NewIoBuffer(1)
 		buf.ReadFrom(s.request.Body)
 		s.decoder.OnReceiveData(s.context, buf, false)
 		s.decoder.OnReceiveTrailers(s.context, protocol.CommonHeader(decodeHeader(s.request.Trailer)))
