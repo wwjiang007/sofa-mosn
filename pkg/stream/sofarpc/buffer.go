@@ -21,29 +21,31 @@ import (
 	"context"
 
 	"github.com/alipay/sofa-mosn/pkg/buffer"
+	"sync"
 )
 
-type sofaBufferCtx struct{}
+var (
+	pool = sync.Pool{
+		New: func() interface{} {
+			return &stream{}
+		},
+	}
+)
 
-func (ctx sofaBufferCtx) Name() int {
-	return buffer.SofaStream
+// ~ Reusable
+func (s *stream) Free() {
+	// reset fields
+	*s = stream{}
+	// return to pool
+	pool.Put(s)
 }
 
-func (ctx sofaBufferCtx) New() interface{} {
-	return new(sofaBuffers)
-}
+func allocBuffer(ctx context.Context) *stream {
+	// alloc from pool
+	s := pool.Get().(*stream)
 
-func (ctx sofaBufferCtx) Reset(i interface{}) {
-	buf, _ := i.(*sofaBuffers)
-	*buf = sofaBuffers{}
-}
+	// append to buffer context's free list
+	buffer.AppendReusable(ctx, s)
 
-type sofaBuffers struct {
-	client stream
-	server stream
-}
-
-func sofaBuffersByContext(context context.Context) *sofaBuffers {
-	ctx := buffer.PoolContext(context)
-	return ctx.Find(sofaBufferCtx{}, nil).(*sofaBuffers)
+	return s
 }

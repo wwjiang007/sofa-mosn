@@ -1,8 +1,6 @@
 package sofarpc
 
 import (
-	"context"
-
 	"github.com/alipay/sofa-mosn/pkg/buffer"
 )
 
@@ -32,7 +30,7 @@ type SofaProtocolBuffers struct {
 	BoltEncodeRsp BoltResponse
 }
 
-func SofaProtocolBuffersByContext(ctx context.Context) *SofaProtocolBuffers {
-	poolCtx := buffer.PoolContext(ctx)
-	return poolCtx.Find(SofaProtocolBufferCtx{}, nil).(*SofaProtocolBuffers)
-}
+//func SofaProtocolBuffersByContext(ctx context.Context) *SofaProtocolBuffers {
+//	poolCtx := buffer.PoolContext(ctx)
+//	return poolCtx.Find(SofaProtocolBufferCtx{}, nil).(*SofaProtocolBuffers)
+//}

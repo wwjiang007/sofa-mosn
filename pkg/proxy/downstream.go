@@ -29,10 +29,10 @@ import (
 	"fmt"
 	"reflect"
 
-	"github.com/alipay/sofa-mosn/pkg/buffer"
 	"github.com/alipay/sofa-mosn/pkg/log"
 	"github.com/alipay/sofa-mosn/pkg/types"
 	"github.com/alipay/sofa-mosn/pkg/protocol"
+	"github.com/alipay/sofa-mosn/pkg/network"
 )
 
 // types.StreamEventListener
@@ -99,18 +99,19 @@ type downStream struct {
 }
 
 func newActiveStream(ctx context.Context, proxy *proxy, responseSender types.StreamSender) *downStream {
-	newCtx := buffer.NewBufferPoolContext(ctx, true)
+	//newCtx := buffer.NewBufferPoolContext(ctx, true)
 
-	proxyBuffers := proxyBuffersByContext(newCtx)
+	//proxyBuffers := proxyBuffersByContext(newCtx)
 
-	stream := &proxyBuffers.stream
+	//stream := &proxyBuffers.stream
+	stream := &downStream{}
 	stream.ID = atomic.AddUint32(&currProxyID, 1)
 	stream.proxy = proxy
-	stream.requestInfo = &proxyBuffers.info
+	stream.requestInfo = network.NewRequestInfo()
 	stream.requestInfo.SetStartTime()
 	stream.responseSender = responseSender
 	stream.responseSender.GetStream().AddEventListener(stream)
-	stream.context = newCtx
+	stream.context = ctx
 
 	stream.logger = log.ByContext(proxy.context)
 
@@ -296,8 +297,9 @@ func (s *downStream) doReceiveHeaders(filter *activeStreamReceiverFilter, header
 	s.retryState = newRetryState(route.RouteRule().Policy().RetryPolicy(), headers, s.cluster)
 
 	//Build Request
-	proxyBuffers := proxyBuffersByContext(s.context)
-	s.upstreamRequest = &proxyBuffers.request
+	//proxyBuffers := proxyBuffersByContext(s.context)
+	//s.upstreamRequest = &proxyBuffers.request
+	s.upstreamRequest = &upstreamRequest{}
 	s.upstreamRequest.downStream = s
 	s.upstreamRequest.proxy = s.proxy
 	s.upstreamRequest.connPool = pool
@@ -901,9 +903,9 @@ func (s *downStream) GiveStream() {
 	}
 
 	// Give buffers to bufferPool
-	if ctx := buffer.PoolContext(s.context); ctx != nil {
-		ctx.Give()
-	}
+	//if ctx := buffer.PoolContext(s.context); ctx != nil {
+	//	ctx.Give()
+	//}
 }
 
 func (s *downStream) startEventProcess() {

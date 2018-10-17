@@ -18,8 +18,6 @@
 package protocol
 
 import (
-	"context"
-
 	"github.com/alipay/sofa-mosn/pkg/buffer"
 	"github.com/alipay/sofa-mosn/pkg/types"
 )
@@ -135,7 +133,7 @@ func (p *ProtocolBuffers) GetRspTailers() map[string]string {
 }
 
 // ProtocolBuffersByContext returns ProtocolBuffers by context
-func ProtocolBuffersByContext(ctx context.Context) *ProtocolBuffers {
-	poolCtx := buffer.PoolContext(ctx)
-	return poolCtx.Find(protocolBufferCtx{}, nil).(*ProtocolBuffers)
-}
+//func ProtocolBuffersByContext(ctx context.Context) *ProtocolBuffers {
+//	poolCtx := buffer.PoolContext(ctx)
+//	return poolCtx.Find(protocolBufferCtx{}, nil).(*ProtocolBuffers)
+//}

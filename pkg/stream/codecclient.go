@@ -23,7 +23,6 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/alipay/sofa-mosn/pkg/buffer"
 	"github.com/alipay/sofa-mosn/pkg/types"
 )
 
@@ -55,7 +54,7 @@ func NewCodecClient(ctx context.Context, prot types.Protocol, connection types.C
 		ActiveRequests: list.New(),
 	}
 
-	codecClient.context = buffer.NewBufferPoolContext(ctx, false)
+	codecClient.context = ctx //buffer.NewBufferPoolContext(ctx, false)
 
 	if factory, ok := streamFactories[prot]; ok {
 		codecClient.Codec = factory.CreateClientStream(codecClient.context, connection, codecClient, codecClient)

@@ -18,7 +18,6 @@
 package buffer
 
 import (
-	"context"
 	"sync"
 )
 
@@ -157,12 +156,12 @@ func (ctx ByteBufferCtx) Reset(i interface{}) {
 }
 
 // GetBytesByContext returns []byte from byteBufferPool by context
-func GetBytesByContext(context context.Context, size int) *[]byte {
-	p := PoolContext(context).Find(ByteBufferCtx{}, nil).(*ByteBufferPoolContainer)
-	buf := p.take(size)
-	p.bytes = append(p.bytes, buf)
-	return buf
-}
+//func GetBytesByContext(context context.Context, size int) *[]byte {
+//	p := PoolContext(context).Find(ByteBufferCtx{}, nil).(*ByteBufferPoolContainer)
+//	buf := p.take(size)
+//	p.bytes = append(p.bytes, buf)
+//	return buf
+//}
 
 // GetBytes returns *[]byte from byteBufferPool
 func GetBytes(size int) *[]byte {

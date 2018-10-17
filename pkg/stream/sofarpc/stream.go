@@ -111,10 +111,7 @@ func newStreamConnection(ctx context.Context, connection types.Connection, clien
 // types.StreamConnection
 func (conn *streamConnection) Dispatch(buf types.IoBuffer) {
 	// 1. pre alloc stream-level ctx, and bufferCtx
-
-	// 2. pass protocol level
-
-	// 3. ctx
+	//cmd, ok := conn.codecEngine.Decode(ctx, buf)
 
 	conn.codecEngine.Process(conn.ctx, buf, conn.handleCommand)
 
@@ -162,14 +159,8 @@ func (conn *streamConnection) handleCommand(ctx context.Context, model interface
 	switch cmd.CommandType() {
 	case sofarpc.REQUEST, sofarpc.REQUEST_ONEWAY:
 		stream = conn.onNewStreamDetect(cmd)
-
-		//req := cmd.(*sofarpc.BoltRequest)
-		//conn.logger.Debugf("Decode conn %d streamID %d sofarpc command, length %d", conn.conn.ID(), stream.ID, 22+int(req.ClassLen)+int(req.HeaderLen)+req.ContentLen)
 	case sofarpc.RESPONSE:
 		stream = conn.onStreamRecv(cmd)
-
-		//resp := cmd.(*sofarpc.BoltResponse)
-		//conn.logger.Debugf("Decode conn %d streamID %d sofarpc command, length %d", conn.conn.ID(), stream.ID, 20+int(resp.ClassLen)+int(resp.HeaderLen)+resp.ContentLen)
 	}
 
 	// header, data notify
@@ -419,6 +410,17 @@ func (s *stream) endStream() {
 func (s *stream) GetStream() types.Stream {
 	return s
 }
+
+// contextManager
+
+type contextManager struct {
+}
+
+func (cm *contextManager) newContext(connCtx context.Context) {
+
+}
+
+// streamMap
 
 type streamMap struct {
 	smap map[uint32]*stream

@@ -7,11 +7,11 @@ import (
 	"time"
 
 	"github.com/alipay/sofa-mosn/pkg/log"
-	"github.com/alipay/sofa-mosn/pkg/protocol"
 	"github.com/alipay/sofa-mosn/pkg/protocol/rpc"
 	"github.com/alipay/sofa-mosn/pkg/protocol/rpc/sofarpc"
 	"github.com/alipay/sofa-mosn/pkg/protocol/serialize"
 	"github.com/alipay/sofa-mosn/pkg/types"
+	"github.com/alipay/sofa-mosn/pkg/buffer"
 )
 
 var (
@@ -54,8 +54,9 @@ func encodeRequestV2(ctx context.Context, cmd *sofarpc.BoltRequestV2) (types.IoB
 	// todo: reuse bytes @boqin
 	//data := make([]byte, 22, defaultTmpBufferSize)
 	size := sofarpc.REQUEST_HEADER_LEN_V2 + int(cmd.ClassLen) + len(cmd.HeaderMap)
-	protocolCtx := protocol.ProtocolBuffersByContext(ctx)
-	buf := protocolCtx.GetReqHeader(size)
+	//protocolCtx := protocol.ProtocolBuffersByContext(ctx)
+	//buf := protocolCtx.GetReqHeader(size)
+	buf := buffer.NewIoBuffer(size)
 
 	b[0] = cmd.Protocol
 	buf.Write(b[0:1])
@@ -116,8 +117,10 @@ func encodeResponseV2(ctx context.Context, cmd *sofarpc.BoltResponseV2) (types.I
 	var b [4]byte
 	// todo: reuse bytes @boqin
 	size := sofarpc.RESPONSE_HEADER_LEN_V2 + int(cmd.ClassLen) + len(cmd.HeaderMap)
-	protocolCtx := protocol.ProtocolBuffersByContext(ctx)
-	buf := protocolCtx.GetRspHeader(size)
+	//protocolCtx := protocol.ProtocolBuffersByContext(ctx)
+	//buf := protocolCtx.GetRspHeader(size)
+
+	buf := buffer.NewIoBuffer(size)
 
 	b[0] = cmd.Protocol
 	buf.Write(b[0:1])

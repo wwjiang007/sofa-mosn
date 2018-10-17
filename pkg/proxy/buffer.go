@@ -18,8 +18,6 @@
 package proxy
 
 import (
-	"context"
-
 	"github.com/alipay/sofa-mosn/pkg/buffer"
 	"github.com/alipay/sofa-mosn/pkg/network"
 )
@@ -45,7 +43,7 @@ type proxyBuffers struct {
 	info    network.RequestInfo
 }
 
-func proxyBuffersByContext(ctx context.Context) *proxyBuffers {
-	poolCtx := buffer.PoolContext(ctx)
-	return poolCtx.Find(proxyBufferCtx{}, nil).(*proxyBuffers)
-}
+//func proxyBuffersByContext(ctx context.Context) *proxyBuffers {
+//	poolCtx := buffer.PoolContext(ctx)
+//	return poolCtx.Find(proxyBufferCtx{}, nil).(*proxyBuffers)
+//}

@@ -21,7 +21,6 @@ import (
 	"container/list"
 	"context"
 
-	"github.com/alipay/sofa-mosn/pkg/buffer"
 	"github.com/alipay/sofa-mosn/pkg/log"
 	"github.com/alipay/sofa-mosn/pkg/types"
 	"github.com/alipay/sofa-mosn/pkg/protocol"
@@ -86,7 +85,7 @@ func (r *upstreamRequest) ResetStream(reason types.StreamResetReason) {
 // types.StreamReceiver
 // Method to decode upstream's response message
 func (r *upstreamRequest) OnReceiveHeaders(context context.Context, headers types.HeaderMap, endStream bool) {
-	buffer.TransmitBufferPoolContext(r.downStream.context, context)
+	//buffer.TransmitBufferPoolContext(r.downStream.context, context)
 	r.ctx = context
 
 	workerPool.Offer(&receiveHeadersEvent{
