@@ -20,7 +20,7 @@ package protocol
 import (
 	"testing"
 
-	"github.com/alipay/sofa-mosn/pkg/types"
+	"mosn.io/mosn/pkg/types"
 )
 
 func TestMapping(t *testing.T) {
@@ -47,4 +47,10 @@ func TestMapping(t *testing.T) {
 		}
 	}
 
+	for i, tc := range testcases {
+		code, _ := MappingHeaderStatusCode(HTTP2, tc.Header)
+		if code != tc.Expetced {
+			t.Errorf("#%d unexpected status code", i)
+		}
+	}
 }

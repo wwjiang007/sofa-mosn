@@ -18,23 +18,31 @@
 package protocol
 
 import (
-	"github.com/alipay/sofa-mosn/pkg/types"
+	"mosn.io/mosn/pkg/types"
 )
 
 // Protocol type definition
 const (
+	Auto      types.Protocol = "Auto"
 	SofaRPC   types.Protocol = "SofaRpc"
 	HTTP1     types.Protocol = "Http1"
 	HTTP2     types.Protocol = "Http2"
 	Xprotocol types.Protocol = "X"
 )
 
+// header direction definition
+const (
+	Request  = "Request"
+	Response = "Response"
+)
+
 // Host key for routing in MOSN Header
 const (
-	MosnHeaderHostKey         = "host"
-	MosnHeaderPathKey         = "path"
-	MosnHeaderQueryStringKey  = "querystring"
-	MosnHeaderMethod          = "method"
+	MosnHeaderDirection       = "x-mosn-direction" // for protocol convert
+	MosnHeaderHostKey         = "x-mosn-host"
+	MosnHeaderPathKey         = "x-mosn-path"
+	MosnHeaderQueryStringKey  = "x-mosn-querystring"
+	MosnHeaderMethod          = "x-mosn-method"
 	MosnOriginalHeaderPathKey = "x-mosn-original-path"
 )
 
@@ -43,6 +51,8 @@ const (
 const (
 	IstioHeaderHostKey = "authority"
 )
+
+// TODO: move CommonHeader to common, not only in protocol
 
 // CommonHeader wrapper for map[string]string
 type CommonHeader map[string]string
@@ -56,6 +66,13 @@ func (h CommonHeader) Get(key string) (value string, ok bool) {
 // Set key-value pair in header map, the previous pair will be replaced if exists
 func (h CommonHeader) Set(key string, value string) {
 	h[key] = value
+}
+
+// Add value for given key.
+// Multiple headers with the same key may be added with this function.
+// Use Set for setting a single header for the given key.
+func (h CommonHeader) Add(key string, value string) {
+	panic("not supported")
 }
 
 // Del delete pair of specified key
@@ -72,4 +89,24 @@ func (h CommonHeader) Range(f func(key, value string) bool) {
 			break
 		}
 	}
+}
+
+// Clone used to deep copy header's map
+func (h CommonHeader) Clone() types.HeaderMap {
+	copy := make(map[string]string)
+
+	for k, v := range h {
+		copy[k] = v
+	}
+
+	return CommonHeader(copy)
+}
+
+func (h CommonHeader) ByteSize() uint64 {
+	var size uint64
+
+	for k, v := range h {
+		size += uint64(len(k) + len(v))
+	}
+	return size
 }

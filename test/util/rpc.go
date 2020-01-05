@@ -1,26 +1,25 @@
 package util
 
 import (
+	"context"
+	"fmt"
 	"net"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
-	"context"
-
-	"fmt"
-
-	"github.com/alipay/sofa-mosn/pkg/buffer"
-	"github.com/alipay/sofa-mosn/pkg/log"
-	"github.com/alipay/sofa-mosn/pkg/network"
-	"github.com/alipay/sofa-mosn/pkg/protocol"
-	"github.com/alipay/sofa-mosn/pkg/protocol/serialize"
-	"github.com/alipay/sofa-mosn/pkg/protocol/sofarpc"
-	"github.com/alipay/sofa-mosn/pkg/protocol/sofarpc/codec"
-	_ "github.com/alipay/sofa-mosn/pkg/protocol/sofarpc/conv"
-	"github.com/alipay/sofa-mosn/pkg/stream"
-	"github.com/alipay/sofa-mosn/pkg/types"
+	"mosn.io/mosn/pkg/api/v2"
+	"mosn.io/mosn/pkg/buffer"
+	"mosn.io/mosn/pkg/mtls"
+	"mosn.io/mosn/pkg/network"
+	"mosn.io/mosn/pkg/protocol"
+	"mosn.io/mosn/pkg/protocol/rpc"
+	"mosn.io/mosn/pkg/protocol/rpc/sofarpc"
+	"mosn.io/mosn/pkg/protocol/rpc/sofarpc/codec"
+	"mosn.io/mosn/pkg/protocol/serialize"
+	"mosn.io/mosn/pkg/stream"
+	"mosn.io/mosn/pkg/types"
 )
 
 const (
@@ -29,41 +28,55 @@ const (
 )
 
 type RPCClient struct {
-	t            *testing.T
-	ClientID     string
-	Protocol     string //bolt1, bolt2
-	Codec        stream.CodecClient
-	Waits        sync.Map
-	conn         types.ClientConnection
-	streamID     uint32
-	respCount    uint32
-	requestCount uint32
+	t              *testing.T
+	ClientID       string
+	Protocol       string //bolt1, bolt2
+	Codec          stream.Client
+	Waits          sync.Map
+	conn           types.ClientConnection
+	streamID       uint64
+	respCount      uint32
+	requestCount   uint32
+	ExpectedStatus int16
 }
 
 func NewRPCClient(t *testing.T, id string, proto string) *RPCClient {
 	return &RPCClient{
-		t:        t,
-		ClientID: id,
-		Protocol: proto,
-		Waits:    sync.Map{},
+		t:              t,
+		ClientID:       id,
+		Protocol:       proto,
+		Waits:          sync.Map{},
+		ExpectedStatus: sofarpc.RESPONSE_STATUS_SUCCESS, // default expected success
 	}
 }
 
-func (c *RPCClient) Connect(addr string) error {
+func (c *RPCClient) connect(addr string, tlsMng types.TLSContextManager) error {
 	stopChan := make(chan struct{})
 	remoteAddr, _ := net.ResolveTCPAddr("tcp", addr)
-	cc := network.NewClientConnection(nil, nil, remoteAddr, stopChan, log.DefaultLogger)
+	cc := network.NewClientConnection(nil, 0, tlsMng, remoteAddr, stopChan)
 	c.conn = cc
-	if err := cc.Connect(true); err != nil {
+	if err := cc.Connect(); err != nil {
 		c.t.Logf("client[%s] connect to server error: %v\n", c.ClientID, err)
 		return err
 	}
-	c.Codec = stream.NewCodecClient(context.Background(), protocol.SofaRPC, cc, nil)
+	c.Codec = stream.NewStreamClient(context.Background(), protocol.SofaRPC, cc, nil)
 	if c.Codec == nil {
-		return fmt.Errorf("NewCodecClient error %v, %v", protocol.SofaRPC, cc)
+		return fmt.Errorf("NewStreamClient error %v, %v", protocol.SofaRPC, cc)
 	}
-
 	return nil
+}
+
+func (c *RPCClient) ConnectTLS(addr string, cfg *v2.TLSConfig) error {
+	tlsMng, err := mtls.NewTLSClientContextManager(cfg)
+	if err != nil {
+		return err
+	}
+	return c.connect(addr, tlsMng)
+
+}
+
+func (c *RPCClient) Connect(addr string) error {
+	return c.connect(addr, nil)
 }
 
 func (c *RPCClient) Stats() bool {
@@ -74,15 +87,19 @@ func (c *RPCClient) Stats() bool {
 func (c *RPCClient) Close() {
 	if c.conn != nil {
 		c.conn.Close(types.NoFlush, types.LocalClose)
+		c.streamID = 0 // reset connection stream id
 	}
 }
 
 func (c *RPCClient) SendRequest() {
-	ID := atomic.AddUint32(&c.streamID, 1)
+	c.SendRequestWithData("testdata")
+}
+func (c *RPCClient) SendRequestWithData(in string) {
+	ID := atomic.AddUint64(&c.streamID, 1)
 	streamID := protocol.StreamIDConv(ID)
-	requestEncoder := c.Codec.NewStream(context.Background(), streamID, c)
-	var headers sofarpc.ProtoBasicCmd
-	data := buffer.NewIoBufferString("testdata")
+	requestEncoder := c.Codec.NewStream(context.Background(), c)
+	var headers sofarpc.SofaRpcCmd
+	data := buffer.NewIoBufferString(in)
 	switch c.Protocol {
 	case Bolt1:
 		headers = BuildBoltV1RequestWithContent(ID, data)
@@ -98,40 +115,39 @@ func (c *RPCClient) SendRequest() {
 	c.Waits.Store(streamID, streamID)
 }
 
-func (c *RPCClient) OnReceiveData(context context.Context, data types.IoBuffer, endStream bool) {
-}
-func (c *RPCClient) OnReceiveTrailers(context context.Context, trailers types.HeaderMap) {
-}
-func (c *RPCClient) OnDecodeError(context context.Context, err error, headers types.HeaderMap) {
-}
-func (c *RPCClient) OnReceiveHeaders(context context.Context, headers types.HeaderMap, endStream bool) {
-	if cmd, ok := headers.(sofarpc.ProtoBasicCmd); ok {
-		streamID := protocol.StreamIDConv(cmd.GetReqID())
+func (c *RPCClient) OnReceive(ctx context.Context, headers types.HeaderMap, data types.IoBuffer, trailers types.HeaderMap) {
+	if cmd, ok := headers.(sofarpc.SofaRpcCmd); ok {
+		streamID := protocol.StreamIDConv(cmd.RequestID())
 
 		if _, ok := c.Waits.Load(streamID); ok {
 			c.t.Logf("RPC client receive streamId:%s \n", streamID)
 			atomic.AddUint32(&c.respCount, 1)
 			// add status check
-			status := cmd.GetRespStatus()
-			if int16(status) == sofarpc.RESPONSE_STATUS_SUCCESS {
-				c.Waits.Delete(streamID)
+			if resp, ok := cmd.(rpc.RespStatus); ok {
+				status := int16(resp.RespStatus())
+				if status == c.ExpectedStatus {
+					c.Waits.Delete(streamID)
+				}
 			}
 		} else {
-			c.t.Errorf("get a unexpected stream ID")
+			c.t.Errorf("get a unexpected stream ID %s", streamID)
 		}
 	} else {
 		c.t.Errorf("get a unexpected header type")
 	}
 }
 
-func BuildBoltV1RequestWithContent(requestID uint32, data types.IoBuffer) *sofarpc.BoltRequestCommand {
-	request := &sofarpc.BoltRequestCommand{
+func (c *RPCClient) OnDecodeError(context context.Context, err error, headers types.HeaderMap) {
+}
+
+func BuildBoltV1RequestWithContent(requestID uint64, data types.IoBuffer) *sofarpc.BoltRequest {
+	request := &sofarpc.BoltRequest{
 		Protocol:   sofarpc.PROTOCOL_CODE_V1,
 		CmdType:    sofarpc.REQUEST,
 		CmdCode:    sofarpc.RPC_REQUEST,
 		Version:    1,
-		ReqID:      requestID,
-		CodecPro:   sofarpc.HESSIAN_SERIALIZE,
+		ReqID:      uint32(requestID),
+		Codec:      sofarpc.HESSIAN2_SERIALIZE,
 		Timeout:    -1,
 		ContentLen: data.Len(),
 	}
@@ -139,52 +155,54 @@ func BuildBoltV1RequestWithContent(requestID uint32, data types.IoBuffer) *sofar
 
 }
 
-func BuildBoltV1Request(requestID uint32) *sofarpc.BoltRequestCommand {
-	request := &sofarpc.BoltRequestCommand{
+func BuildBoltV1Request(requestID uint64) *sofarpc.BoltRequest {
+	request := &sofarpc.BoltRequest{
 		Protocol: sofarpc.PROTOCOL_CODE_V1,
 		CmdType:  sofarpc.REQUEST,
 		CmdCode:  sofarpc.RPC_REQUEST,
 		Version:  1,
-		ReqID:    requestID,
-		CodecPro: sofarpc.HESSIAN_SERIALIZE,
+		ReqID:    uint32(requestID),
+		Codec:    sofarpc.HESSIAN2_SERIALIZE, //todo: read default codec from config
 		Timeout:  -1,
 	}
 	return buildBoltV1Request(request)
 }
 
-func buildBoltV1Request(request *sofarpc.BoltRequestCommand) *sofarpc.BoltRequestCommand {
+func buildBoltV1Request(request *sofarpc.BoltRequest) *sofarpc.BoltRequest {
 
 	headers := map[string]string{"service": "testSofa"} // used for sofa routing
 
-	if headerBytes, err := serialize.Instance.Serialize(headers); err != nil {
+	buf := buffer.NewIoBuffer(100)
+	if err := serialize.Instance.SerializeMap(headers, buf); err != nil {
 		panic("serialize headers error")
 	} else {
-		request.HeaderMap = headerBytes
-		request.HeaderLen = int16(len(headerBytes))
+		request.HeaderMap = buf.Bytes()
+		request.HeaderLen = int16(buf.Len())
+		request.RequestHeader = headers
 	}
 
 	return request
 }
 
-func BuildBoltV2Request(requestID uint32) *sofarpc.BoltV2RequestCommand {
+func BuildBoltV2Request(requestID uint64) *sofarpc.BoltRequestV2 {
 	//TODO:
 	return nil
 }
 
-func BuildBoltV1Response(req *sofarpc.BoltRequestCommand) *sofarpc.BoltResponseCommand {
-	return &sofarpc.BoltResponseCommand{
+func BuildBoltV1Response(req *sofarpc.BoltRequest) *sofarpc.BoltResponse {
+	return &sofarpc.BoltResponse{
 		Protocol:       req.Protocol,
 		CmdType:        sofarpc.RESPONSE,
 		CmdCode:        sofarpc.RPC_RESPONSE,
 		Version:        req.Version,
 		ReqID:          req.ReqID,
-		CodecPro:       req.CodecPro, //todo: read default codec from config
+		Codec:          req.Codec, //todo: read default codec from config
 		ResponseStatus: sofarpc.RESPONSE_STATUS_SUCCESS,
 		HeaderLen:      req.HeaderLen,
 		HeaderMap:      req.HeaderMap,
 	}
 }
-func BuildBoltV2Response(req *sofarpc.BoltV2RequestCommand) *sofarpc.BoltV2ResponseCommand {
+func BuildBoltV2Response(req *sofarpc.BoltRequestV2) *sofarpc.BoltResponseV2 {
 	//TODO:
 	return nil
 }
@@ -215,19 +233,15 @@ func NewRPCServer(t *testing.T, addr string, proto string) UpstreamServer {
 }
 
 func (s *RPCServer) ServeBoltV1(t *testing.T, conn net.Conn) {
-	atomic.AddUint32(&s.Count, 1)
-	ServeBoltV1(t, conn)
-}
-
-func ServeBoltV1(t *testing.T, conn net.Conn) {
 	response := func(iobuf types.IoBuffer) ([]byte, bool) {
-		cmd, _ := codec.BoltV1.GetDecoder().Decode(nil, iobuf)
+		cmd, _ := codec.BoltCodec.Decode(nil, iobuf)
 		if cmd == nil {
 			return nil, false
 		}
-		if req, ok := cmd.(*sofarpc.BoltRequestCommand); ok {
+		if req, ok := cmd.(*sofarpc.BoltRequest); ok {
+			atomic.AddUint32(&s.Count, 1)
 			resp := BuildBoltV1Response(req)
-			iobufresp, err := codec.BoltV1.GetEncoder().EncodeHeaders(nil, resp)
+			iobufresp, err := codec.BoltCodec.Encode(nil, resp)
 			if err != nil {
 				t.Errorf("Build response error: %v\n", err)
 				return nil, true

@@ -19,11 +19,13 @@ package types
 
 import (
 	"context"
+	"errors"
 	"net"
+	"os"
+	"time"
 
-	"github.com/alipay/sofa-mosn/pkg/api/v2"
-	"github.com/alipay/sofa-mosn/pkg/mtls/crypto/tls"
 	"github.com/rcrowley/go-metrics"
+	"mosn.io/mosn/pkg/api/v2"
 )
 
 //
@@ -89,7 +91,7 @@ type Listener interface {
 	Addr() net.Addr
 
 	// Start starts listener with context
-	Start(lctx context.Context)
+	Start(lctx context.Context, restart bool)
 
 	// Stop stops listener
 	// Accepted connections and listening sockets will not be closed
@@ -101,8 +103,8 @@ type Listener interface {
 	// Set listener tag
 	SetListenerTag(tag uint64)
 
-	// ListenerFD returns a copy a listener fd
-	ListenerFD() (uintptr, error)
+	// ListenerFile returns a copy a listener file
+	ListenerFile() (*os.File, error)
 
 	// PerConnBufferLimitBytes returns the limit bytes per connection
 	PerConnBufferLimitBytes() uint32
@@ -110,11 +112,11 @@ type Listener interface {
 	// Set limit bytes per connection
 	SetPerConnBufferLimitBytes(limitBytes uint32)
 
-	// Set if listener should hand off restored destination connections
-	SetHandOffRestoredDestinationConnections(restoredDestation bool)
+	// Set if listener should use original dst
+	SetUseOriginalDst(use bool)
 
-	// Get if listener hand off restored destination connections
-	HandOffRestoredDestinationConnections() bool
+	// Get if listener should use original dst
+	UseOriginalDst() bool
 
 	// SetListenerCallbacks set a listener event listener
 	SetListenerCallbacks(cb ListenerEventListener)
@@ -126,17 +128,10 @@ type Listener interface {
 	Close(lctx context.Context) error
 }
 
-//
-type TLSContextManager interface {
-	Conn(net.Conn) net.Conn
-	Enabled() bool
-	Config() *tls.Config
-}
-
 // ListenerEventListener is a Callback invoked by a listener.
 type ListenerEventListener interface {
 	// OnAccept is called on new connection accepted
-	OnAccept(rawc net.Conn, handOffRestoredDestinationConnections bool, oriRemoteAddr net.Addr, c chan Connection, buf []byte)
+	OnAccept(rawc net.Conn, useOriginalDst bool, oriRemoteAddr net.Addr, c chan Connection, buf []byte)
 
 	// OnNewConnection is called on new mosn connection created
 	OnNewConnection(ctx context.Context, conn Connection)
@@ -177,13 +172,13 @@ type ListenerFilterManager interface {
 }
 
 // Connection status
-type ConnState string
+type ConnState int
 
 // Connection statuses
 const (
-	Open    ConnState = "Open"
-	Closing ConnState = "Closing"
-	Closed  ConnState = "Closed"
+	ConnInit ConnState = iota
+	ConnActive
+	ConnClosed
 )
 
 // ConnectionCloseType represent connection close type
@@ -239,13 +234,13 @@ type Connection interface {
 	SetRemoteAddr(address net.Addr)
 
 	// AddConnectionEventListener add a listener method will be called when connection event occur.
-	AddConnectionEventListener(cb ConnectionEventListener)
+	AddConnectionEventListener(listener ConnectionEventListener)
 
 	// AddBytesReadListener add a method will be called everytime bytes read
-	AddBytesReadListener(cb func(bytesRead uint64))
+	AddBytesReadListener(listener func(bytesRead uint64))
 
 	// AddBytesSentListener add a method will be called everytime bytes write
-	AddBytesSentListener(cb func(bytesSent uint64))
+	AddBytesSentListener(listener func(bytesSent uint64))
 
 	// NextProtocol returns network level negotiation, such as ALPN. Returns empty string if not supported.
 	NextProtocol() string
@@ -272,9 +267,8 @@ type Connection interface {
 	// SetLocalAddress sets a local address
 	SetLocalAddress(localAddress net.Addr, restored bool)
 
-	// SetStats injects a connection stats
-	SetStats(stats *ConnectionStats)
-
+	// SetCollector set read/write mertics collectors
+	SetCollector(read, write metrics.Counter)
 	// LocalAddressRestored returns whether local address is restored
 	// TODO: unsupported now
 	LocalAddressRestored() bool
@@ -292,6 +286,16 @@ type Connection interface {
 	// Caution: raw conn only used in io-loop disable mode
 	// TODO: a better way to provide raw conn
 	RawConn() net.Conn
+
+	// SetTransferEventListener set a method will be called when connection transfer occur
+	SetTransferEventListener(listener func() bool)
+
+	// SetIdleTimeout sets the timeout that will set the connnection to idle. mosn close idle connection
+	// if no idle timeout setted or a zero value for d means no idle connections.
+	SetIdleTimeout(d time.Duration)
+
+	// State returns the connection state
+	State() ConnState
 }
 
 // ConnectionStats is a group of connection metrics
@@ -307,7 +311,7 @@ type ClientConnection interface {
 	Connection
 
 	// connect to server in a async way
-	Connect(ioEnabled bool) error
+	Connect() error
 }
 
 // ConnectionEvent type
@@ -323,18 +327,26 @@ const (
 	Connected       ConnectionEvent = "ConnectedFlag"
 	ConnectTimeout  ConnectionEvent = "ConnectTimeout"
 	ConnectFailed   ConnectionEvent = "ConnectFailed"
+	OnReadTimeout   ConnectionEvent = "OnReadTimeout"
+	OnWriteTimeout  ConnectionEvent = "OnWriteTimeout"
 )
 
 // IsClose represents whether the event is triggered by connection close
 func (ce ConnectionEvent) IsClose() bool {
 	return ce == LocalClose || ce == RemoteClose ||
-		ce == OnReadErrClose || ce == OnWriteErrClose
+		ce == OnReadErrClose || ce == OnWriteErrClose || ce == OnWriteTimeout
 }
 
 // ConnectFailure represents whether the event is triggered by connection failure
 func (ce ConnectionEvent) ConnectFailure() bool {
 	return ce == ConnectFailed || ce == ConnectTimeout
 }
+
+// Default connection arguments
+const (
+	DefaultConnReadTimeout  = 15 * time.Second
+	DefaultConnWriteTimeout = 15 * time.Second
+)
 
 // ConnectionEventListener is a network level callbacks that happen on a connection.
 type ConnectionEventListener interface {
@@ -344,17 +356,11 @@ type ConnectionEventListener interface {
 
 // ConnectionHandler contains the listeners for a mosn server
 type ConnectionHandler interface {
-	// NumConnections reports the connections that ConnectionHandler keeps.
-	NumConnections() uint64
-
 	// AddOrUpdateListener
 	// adds a listener into the ConnectionHandler or
 	// update a listener
 	AddOrUpdateListener(lc *v2.Listener, networkFiltersFactories []NetworkFilterChainFactory,
 		streamFiltersFactories []StreamFilterChainFactory) (ListenerEventListener, error)
-
-	// StartListener starts a listener by the specified listener tag
-	StartListener(lctx context.Context, listenerTag uint64)
 
 	//StartListeners starts all listeners the ConnectionHandler has
 	StartListeners(lctx context.Context)
@@ -376,7 +382,7 @@ type ConnectionHandler interface {
 	StopListeners(lctx context.Context, close bool) error
 
 	// ListListenersFD reports all listeners' fd
-	ListListenersFD(lctx context.Context) []uintptr
+	ListListenersFile(lctx context.Context) []*os.File
 
 	// StopConnection Stop Connection
 	StopConnection()
@@ -470,3 +476,7 @@ func (as Addresses) Contains(addr net.Addr) bool {
 
 	return false
 }
+
+var (
+	ErrConnectionHasClosed = errors.New("connection has closed")
+)

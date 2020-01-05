@@ -4,11 +4,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/alipay/sofa-mosn/pkg/protocol"
-	"github.com/alipay/sofa-mosn/test/util"
+	"mosn.io/mosn/pkg/protocol"
+	"mosn.io/mosn/test/util"
 )
 
-// Prxoy Mode
+// Proxy Mode
 func TestProxy(t *testing.T) {
 	appaddr := "127.0.0.1:8080"
 	testCases := []*TestCase{
@@ -30,7 +30,6 @@ func TestProxy(t *testing.T) {
 		case <-time.After(15 * time.Second):
 			t.Errorf("[ERROR MESSAGE] #%d %v to mesh %v hang\n", i, tc.AppProtocol, tc.MeshProtocol)
 		}
-		close(tc.Stop)
-		time.Sleep(time.Second)
+		tc.FinishCase()
 	}
 }

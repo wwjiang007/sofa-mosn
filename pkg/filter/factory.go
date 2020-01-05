@@ -20,7 +20,7 @@ package filter
 import (
 	"fmt"
 
-	"github.com/alipay/sofa-mosn/pkg/types"
+	"mosn.io/mosn/pkg/types"
 )
 
 var creatorStreamFactory map[string]StreamFilterFactoryCreator

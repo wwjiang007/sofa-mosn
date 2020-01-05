@@ -21,11 +21,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/alipay/sofa-mosn/pkg/api/v2"
-	"github.com/alipay/sofa-mosn/pkg/protocol"
-	"github.com/alipay/sofa-mosn/pkg/router"
-	"github.com/alipay/sofa-mosn/pkg/types"
 	metrics "github.com/rcrowley/go-metrics"
+	"mosn.io/mosn/pkg/api/v2"
+	"mosn.io/mosn/pkg/protocol"
+	"mosn.io/mosn/pkg/router"
+	"mosn.io/mosn/pkg/types"
 )
 
 func doNothing() {}
@@ -95,7 +95,38 @@ func TestRetryState(t *testing.T) {
 		{headerOK, "", types.NoRetry},
 	}
 	for i, tc := range testcases {
-		if rs.retry(tc.Header, tc.Reason, doNothing) != tc.Expected {
+		if rs.retry(tc.Header, tc.Reason) != tc.Expected {
+			t.Errorf("#%d retry state failed", i)
+		}
+	}
+}
+
+func TestRetryConnetionFailed(t *testing.T) {
+	rcfg := &v2.Router{}
+	pcfg := &v2.RetryPolicy{
+		RetryPolicyConfig: v2.RetryPolicyConfig{
+			RetryOn:    false,
+			NumRetries: 10,
+		},
+		RetryTimeout: time.Second,
+	}
+	rcfg.Route = v2.RouteAction{}
+	rcfg.Route.RetryPolicy = pcfg
+	r, _ := router.NewRouteRuleImplBase(nil, rcfg)
+	policy := r.Policy().RetryPolicy()
+	clusterInfo := &fakeClusterInfo{
+		mgr: &fakeResourceManager{},
+	}
+	rs := newRetryState(policy, nil, clusterInfo, protocol.HTTP1)
+	testcases := []struct {
+		Header   types.HeaderMap
+		Reason   types.StreamResetReason
+		Expected types.RetryCheckStatus
+	}{
+		{nil, types.StreamConnectionFailed, types.ShouldRetry},
+	}
+	for i, tc := range testcases {
+		if rs.retry(tc.Header, tc.Reason) != tc.Expected {
 			t.Errorf("#%d retry state failed", i)
 		}
 	}

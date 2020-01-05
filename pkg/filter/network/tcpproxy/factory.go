@@ -20,10 +20,10 @@ package tcpproxy
 import (
 	"context"
 
-	"github.com/alipay/sofa-mosn/pkg/api/v2"
-	"github.com/alipay/sofa-mosn/pkg/config"
-	"github.com/alipay/sofa-mosn/pkg/filter"
-	"github.com/alipay/sofa-mosn/pkg/types"
+	"mosn.io/mosn/pkg/api/v2"
+	"mosn.io/mosn/pkg/config"
+	"mosn.io/mosn/pkg/filter"
+	"mosn.io/mosn/pkg/types"
 )
 
 func init() {

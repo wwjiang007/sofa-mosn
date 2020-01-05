@@ -19,10 +19,11 @@ package router
 
 import (
 	"reflect"
+	"sort"
 	"testing"
 
-	"github.com/alipay/sofa-mosn/pkg/api/v2"
-	"github.com/alipay/sofa-mosn/pkg/types"
+	v2 "mosn.io/mosn/pkg/api/v2"
+	"mosn.io/mosn/pkg/types"
 )
 
 func TestNewMetadataMatchCriteriaImpl(t *testing.T) {
@@ -52,15 +53,15 @@ func TestNewMetadataMatchCriteriaImpl(t *testing.T) {
 				MatchCriteriaArray: []types.MetadataMatchCriterion{
 					&MetadataMatchCriterionImpl{
 						Name:  "appInfo",
-						Value: types.GenerateHashedValue("test"),
+						Value: "test",
 					},
 					&MetadataMatchCriterionImpl{
 						Name:  "label",
-						Value: types.GenerateHashedValue("green"),
+						Value: "green",
 					},
 					&MetadataMatchCriterionImpl{
 						Name:  "version",
-						Value: types.GenerateHashedValue("v1"),
+						Value: "v1",
 					},
 				},
 			},
@@ -76,15 +77,15 @@ func TestNewMetadataMatchCriteriaImpl(t *testing.T) {
 				MatchCriteriaArray: []types.MetadataMatchCriterion{
 					&MetadataMatchCriterionImpl{
 						Name:  "appInfo",
-						Value: types.GenerateHashedValue("test"),
+						Value: "test",
 					},
 					&MetadataMatchCriterionImpl{
 						Name:  "label",
-						Value: types.GenerateHashedValue("green"),
+						Value: "green",
 					},
 					&MetadataMatchCriterionImpl{
 						Name:  "version",
-						Value: types.GenerateHashedValue("v1"),
+						Value: "v1",
 					},
 				},
 			},
@@ -100,7 +101,7 @@ func TestNewMetadataMatchCriteriaImpl(t *testing.T) {
 				MatchCriteriaArray: []types.MetadataMatchCriterion{
 					&MetadataMatchCriterionImpl{
 						Name:  "version",
-						Value: types.GenerateHashedValue("v1"),
+						Value: "v1",
 					},
 				},
 			},
@@ -133,25 +134,27 @@ func Test_NewConfigImpl(t *testing.T) {
 			name: "case1",
 			args: args{
 				routerConfig: &v2.RouterConfiguration{
-					RequestHeadersToAdd: []*v2.HeaderValueOption{
-						{
-							Header: &v2.HeaderValue{
-								Key:   "LEVEL",
-								Value: "1",
+					RouterConfigurationConfig: v2.RouterConfigurationConfig{
+						RequestHeadersToAdd: []*v2.HeaderValueOption{
+							{
+								Header: &v2.HeaderValue{
+									Key:   "LEVEL",
+									Value: "1",
+								},
+								Append: &FALSE,
 							},
-							Append: &FALSE,
 						},
-					},
-					ResponseHeadersToAdd: []*v2.HeaderValueOption{
-						{
-							Header: &v2.HeaderValue{
-								Key:   "Random",
-								Value: "123456",
+						ResponseHeadersToAdd: []*v2.HeaderValueOption{
+							{
+								Header: &v2.HeaderValue{
+									Key:   "Random",
+									Value: "123456",
+								},
+								Append: &FALSE,
 							},
-							Append: &FALSE,
 						},
+						ResponseHeadersToRemove: []string{"status"},
 					},
-					ResponseHeadersToRemove: []string{"status"},
 				},
 			},
 			want: &configImpl{
@@ -188,5 +191,27 @@ func Test_NewConfigImpl(t *testing.T) {
 				t.Errorf("NewConfigImpl(routerConfig *v2.RouterConfiguration) = %v, want %v", got, tt.want)
 			}
 		})
+	}
+}
+
+// test MetadataMatchCriteriaImpl's sort.Interface
+func TestMetadataMatchCriteriaImplSort(t *testing.T) {
+	keys := []string{"1", "3", "2", "0"}
+	values := []string{"b", "d", "c", "a"}
+	var mciArray []types.MetadataMatchCriterion
+	for i := range keys {
+		mmci := &MetadataMatchCriterionImpl{
+			Name:  keys[i],
+			Value: values[i],
+		}
+		mciArray = append(mciArray, mmci)
+	}
+	m := &MetadataMatchCriteriaImpl{mciArray}
+	sort.Sort(m)
+	expected := []string{"0", "1", "2", "3"}
+	for i, mmci := range m.MatchCriteriaArray {
+		if mmci.MetadataKeyName() != expected[i] {
+			t.Error("sort unexpected")
+		}
 	}
 }

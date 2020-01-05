@@ -19,6 +19,8 @@ package serialize
 
 import (
 	"testing"
+
+	"mosn.io/mosn/pkg/buffer"
 )
 
 func BenchmarkSerializeMap(b *testing.B) {
@@ -26,38 +28,26 @@ func BenchmarkSerializeMap(b *testing.B) {
 		"service": "com.alipay.test.TestService:1.0",
 	}
 
+	b.ResetTimer()
 	for n := 0; n < b.N; n++ {
-		Instance.Serialize(headers)
+		buf := buffer.GetIoBuffer(128)
+		Instance.SerializeMap(headers, buf)
 	}
 }
 
-func BenchmarkSerializeString(b *testing.B) {
-	className := "com.alipay.sofa.rpc.core.request.SofaRequest"
-
-	for n := 0; n < b.N; n++ {
-		Instance.Serialize(className)
-	}
-}
-
-func BenchmarkDeSerializeMap(b *testing.B) {
+func BenchmarkDeserializeMap(b *testing.B) {
 	headers := map[string]string{
 		"service": "com.alipay.test.TestService:1.0",
 	}
 
-	buf, _ := Instance.Serialize(headers)
+	buf := buffer.GetIoBuffer(128)
+	Instance.SerializeMap(headers, buf)
+
+	bytes := buf.Bytes()
 	header := make(map[string]string)
 
+	b.ResetTimer()
 	for n := 0; n < b.N; n++ {
-		Instance.DeSerialize(buf, &header)
-	}
-}
-
-func BenchmarkDeSerializeString(b *testing.B) {
-	className := "com.alipay.sofa.rpc.core.request.SofaRequest"
-	buf, _ := Instance.Serialize(className)
-	var class string
-
-	for n := 0; n < b.N; n++ {
-		Instance.DeSerialize(buf, &class)
+		Instance.DeserializeMap(bytes, header)
 	}
 }

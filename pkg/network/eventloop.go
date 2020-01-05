@@ -23,8 +23,8 @@ import (
 	"sync"
 	"sync/atomic"
 
-	mosnsync "github.com/alipay/sofa-mosn/pkg/sync"
 	"github.com/neverhook/easygo/netpoll"
+	mosnsync "mosn.io/mosn/pkg/sync"
 )
 
 var (
@@ -47,7 +47,7 @@ func init() {
 	//	if err != nil {
 	//		log.Fatalln("create poller failed, caused by ", err)
 	//	}
-    //
+	//
 	//	eventLoopPool[i] = &eventLoop{
 	//		poller: poller,
 	//		conn:   make(map[uint64]*connEvent), //TODO init size

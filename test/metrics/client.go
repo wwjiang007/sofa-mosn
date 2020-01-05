@@ -10,14 +10,14 @@ import (
 	"net/http"
 	"sync/atomic"
 
-	"github.com/alipay/sofa-mosn/pkg/log"
-	"github.com/alipay/sofa-mosn/pkg/network"
-	"github.com/alipay/sofa-mosn/pkg/protocol"
-	"github.com/alipay/sofa-mosn/pkg/protocol/sofarpc"
-	"github.com/alipay/sofa-mosn/pkg/stream"
-	"github.com/alipay/sofa-mosn/pkg/types"
-	"github.com/alipay/sofa-mosn/test/util"
 	"golang.org/x/net/http2"
+	"mosn.io/mosn/pkg/network"
+	"mosn.io/mosn/pkg/protocol"
+	"mosn.io/mosn/pkg/protocol/rpc"
+	"mosn.io/mosn/pkg/protocol/rpc/sofarpc"
+	"mosn.io/mosn/pkg/stream"
+	"mosn.io/mosn/pkg/types"
+	"mosn.io/mosn/test/util"
 )
 
 type Client interface {
@@ -75,15 +75,9 @@ type streamReceiver struct {
 	ch chan<- error
 }
 
-func (s *streamReceiver) OnReceiveData(context context.Context, data types.IoBuffer, endStream bool) {
-}
-func (s *streamReceiver) OnReceiveTrailers(context context.Context, trailers types.HeaderMap) {
-}
-func (s *streamReceiver) OnDecodeError(context context.Context, err error, headers types.HeaderMap) {
-}
-func (s *streamReceiver) OnReceiveHeaders(context context.Context, headers types.HeaderMap, endStream bool) {
-	if cmd, ok := headers.(sofarpc.ProtoBasicCmd); ok {
-		status := cmd.GetRespStatus()
+func (s *streamReceiver) OnReceive(ctx context.Context, headers types.HeaderMap, data types.IoBuffer, trailers types.HeaderMap) {
+	if resp, ok := headers.(rpc.RespStatus); ok {
+		status := resp.RespStatus()
 		if int16(status) != sofarpc.RESPONSE_STATUS_SUCCESS {
 			s.ch <- errors.New(fmt.Sprintf("%d", status))
 			return
@@ -95,11 +89,14 @@ func (s *streamReceiver) OnReceiveHeaders(context context.Context, headers types
 	s.ch <- errors.New("no response status")
 }
 
+func (s *streamReceiver) OnDecodeError(context context.Context, err error, headers types.HeaderMap) {
+}
+
 type RPCClient struct {
 	Addr     string
 	conn     types.ClientConnection
-	codec    stream.CodecClient
-	streamID uint32
+	client   stream.Client
+	streamID uint64
 }
 
 func NewRPCClient(addr string) Client {
@@ -111,8 +108,8 @@ func NewRPCClient(addr string) Client {
 func (c *RPCClient) connect() error {
 	stopChan := make(chan struct{})
 	remoteAddr, _ := net.ResolveTCPAddr("tcp", c.Addr)
-	cc := network.NewClientConnection(nil, nil, remoteAddr, stopChan, log.DefaultLogger)
-	if err := cc.Connect(true); err != nil {
+	cc := network.NewClientConnection(nil, 0, nil, remoteAddr, stopChan)
+	if err := cc.Connect(); err != nil {
 		return err
 	}
 	c.conn = cc
@@ -127,11 +124,10 @@ func (c *RPCClient) Send() <-chan error {
 				ch <- err
 				return
 			}
-			c.codec = stream.NewCodecClient(context.Background(), protocol.SofaRPC, c.conn, nil)
+			c.client = stream.NewStreamClient(context.Background(), protocol.SofaRPC, c.conn, nil)
 		}
-		id := atomic.AddUint32(&c.streamID, 1)
-		streamID := protocol.StreamIDConv(id)
-		encoder := c.codec.NewStream(context.Background(), streamID, &streamReceiver{ch})
+		id := atomic.AddUint64(&c.streamID, 1)
+		encoder := c.client.NewStream(context.Background(), &streamReceiver{ch})
 		headers := util.BuildBoltV1Request(id)
 		encoder.AppendHeaders(context.Background(), headers, true)
 	}(ch)

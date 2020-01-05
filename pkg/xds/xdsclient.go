@@ -25,23 +25,23 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
-	"github.com/alipay/sofa-mosn/pkg/config"
-	"github.com/alipay/sofa-mosn/pkg/log"
-	"github.com/alipay/sofa-mosn/pkg/xds/v2"
 	apicluster "github.com/envoyproxy/go-control-plane/envoy/api/v2/cluster"
 	bootstrap "github.com/envoyproxy/go-control-plane/envoy/config/bootstrap/v2"
 	"github.com/gogo/protobuf/jsonpb"
 	"github.com/gogo/protobuf/types"
-	"github.com/json-iterator/go"
+	jsoniter "github.com/json-iterator/go"
+	"mosn.io/mosn/pkg/config"
+	"mosn.io/mosn/pkg/log"
+	v2 "mosn.io/mosn/pkg/xds/v2"
 )
 
 var json = jsoniter.ConfigCompatibleWithStandardLibrary
 
 // Client provide an ADS client
 type Client struct {
-	v2        *v2.ClientV2
 	adsClient *v2.ADSClient
 }
 
@@ -98,7 +98,7 @@ func UnmarshalResources(config *config.MOSNConfig) (dynamicResources *bootstrap.
 
 			err = jsonpb.UnmarshalString(string(b), dynamicResources)
 			if err != nil {
-				log.DefaultLogger.Errorf("fail to marshal dynamic_resources: %v", err)
+				log.DefaultLogger.Errorf("fail to unmarshal dynamic_resources: %v", err)
 				return nil, nil, err
 			}
 			err = dynamicResources.Validate()
@@ -144,21 +144,6 @@ func UnmarshalResources(config *config.MOSNConfig) (dynamicResources *bootstrap.
 				}
 				cluster["circuit_breakers"] = jsoniter.RawMessage(b)
 
-				if connectTimeoutRaw, ok := cluster["connect_timeout"]; ok {
-					connectTimeout := types.Duration{}
-					err = json.Unmarshal([]byte(connectTimeoutRaw), &connectTimeout)
-					if err != nil {
-						log.DefaultLogger.Errorf("fail to unmarshal connect_timeout: %v", err)
-						return nil, nil, err
-					}
-					d := duration2String(&connectTimeout)
-					b, err = json.Marshal(&d)
-					if err != nil {
-						log.DefaultLogger.Errorf("fail to marshal connect_timeout: %v", err)
-						return nil, nil, err
-					}
-					cluster["connect_timeout"] = jsoniter.RawMessage(b)
-				}
 				b, err = json.Marshal(&cluster)
 				if err != nil {
 					log.DefaultLogger.Errorf("fail to marshal cluster: %v", err)
@@ -196,38 +181,33 @@ func UnmarshalResources(config *config.MOSNConfig) (dynamicResources *bootstrap.
 
 // Start used to fetch listeners/clusters/clusterloadassignment config from pilot in cycle,
 // usually called when mosn start
-func (c *Client) Start(config *config.MOSNConfig, serviceCluster, serviceNode string) error {
+func (c *Client) Start(config *config.MOSNConfig) error {
 	log.DefaultLogger.Infof("xds client start")
-	if c.v2 == nil {
-		dynamicResources, staticResources, err := UnmarshalResources(config)
-		if err != nil {
-			log.DefaultLogger.Warnf("fail to unmarshal xds resources, skip xds: %v", err)
-			return errors.New("fail to unmarshal xds resources")
-		}
-		xdsConfig := v2.XDSConfig{}
-		err = xdsConfig.Init(dynamicResources, staticResources)
-		if err != nil {
-			log.DefaultLogger.Warnf("fail to init xds config, skip xds: %v", err)
-			return errors.New("fail to init xds config")
-		}
-		c.v2 = &v2.ClientV2{
-			ServiceCluster: serviceCluster,
-			ServiceNode:    serviceNode,
-			Config:         &xdsConfig,
-		}
+
+	dynamicResources, staticResources, err := UnmarshalResources(config)
+	if err != nil {
+		log.DefaultLogger.Warnf("fail to unmarshal xds resources, skip xds: %v", err)
+		return errors.New("fail to unmarshal xds resources")
+	}
+
+	xdsConfig := v2.XDSConfig{}
+	err = xdsConfig.Init(dynamicResources, staticResources)
+	if err != nil {
+		log.DefaultLogger.Warnf("fail to init xds config, skip xds: %v", err)
+		return errors.New("fail to init xds config")
 	}
 
 	stopChan := make(chan int)
 	sendControlChan := make(chan int)
 	recvControlChan := make(chan int)
 	adsClient := &v2.ADSClient{
-		AdsConfig:       c.v2.Config.ADSConfig,
-		StreamClient:    nil,
-		V2Client:        c.v2,
-		MosnConfig:      nil,
-		SendControlChan: sendControlChan,
-		RecvControlChan: recvControlChan,
-		StopChan:        stopChan,
+		AdsConfig:         xdsConfig.ADSConfig,
+		StreamClientMutex: sync.RWMutex{},
+		StreamClient:      nil,
+		MosnConfig:        config,
+		SendControlChan:   sendControlChan,
+		RecvControlChan:   recvControlChan,
+		StopChan:          stopChan,
 	}
 	adsClient.Start()
 	c.adsClient = adsClient
@@ -237,7 +217,9 @@ func (c *Client) Start(config *config.MOSNConfig, serviceCluster, serviceNode st
 // Stop used to stop fetch listeners/clusters/clusterloadassignment config from pilot,
 // usually called when mosn quit
 func (c *Client) Stop() {
-	log.DefaultLogger.Infof("prepare to stop xds client")
-	c.adsClient.Stop()
-	log.DefaultLogger.Infof("xds client stop")
+	if c.adsClient != nil {
+		log.DefaultLogger.Infof("prepare to stop xds client")
+		c.adsClient.Stop()
+		log.DefaultLogger.Infof("xds client stop")
+	}
 }

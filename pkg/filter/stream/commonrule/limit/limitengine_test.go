@@ -20,7 +20,7 @@ package limit
 import (
 	"testing"
 
-	"github.com/alipay/sofa-mosn/pkg/filter/stream/commonrule/model"
+	"mosn.io/mosn/pkg/filter/stream/commonrule/model"
 )
 
 func TestNewLimitEngine(t *testing.T) {

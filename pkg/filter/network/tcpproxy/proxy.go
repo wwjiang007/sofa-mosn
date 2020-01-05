@@ -25,10 +25,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/alipay/sofa-mosn/pkg/api/v2"
-	"github.com/alipay/sofa-mosn/pkg/log"
-	"github.com/alipay/sofa-mosn/pkg/network"
-	"github.com/alipay/sofa-mosn/pkg/types"
+	"mosn.io/mosn/pkg/api/v2"
+	"mosn.io/mosn/pkg/log"
+	"mosn.io/mosn/pkg/network"
+	"mosn.io/mosn/pkg/types"
+
+	mosnctx "mosn.io/mosn/pkg/context"
 )
 
 // ReadFilter
@@ -51,7 +53,7 @@ func NewProxy(ctx context.Context, config *v2.TCPProxy, clusterManager types.Clu
 		config:         NewProxyConfig(config),
 		clusterManager: clusterManager,
 		requestInfo:    network.NewRequestInfo(),
-		accessLogs:     ctx.Value(types.ContextKeyAccessLogs).([]types.AccessLog),
+		accessLogs:     mosnctx.Get(ctx, types.ContextKeyAccessLogs).([]types.AccessLog),
 	}
 
 	p.upstreamCallbacks = &upstreamCallbacks{
@@ -65,7 +67,9 @@ func NewProxy(ctx context.Context, config *v2.TCPProxy, clusterManager types.Clu
 }
 
 func (p *proxy) OnData(buffer types.IoBuffer) types.FilterStatus {
-	log.DefaultLogger.Tracef("Tcp Proxy :: read data , len = %v", buffer.Len())
+	if log.DefaultLogger.GetLogLevel() >= log.DEBUG {
+		log.DefaultLogger.Debugf("[tcpproxy] [ondata] read data , len = %v", buffer.Len())
+	}
 	bytesRecved := p.requestInfo.BytesReceived() + uint64(buffer.Len())
 	p.requestInfo.SetBytesReceived(bytesRecved)
 
@@ -75,7 +79,9 @@ func (p *proxy) OnData(buffer types.IoBuffer) types.FilterStatus {
 }
 
 func (p *proxy) OnNewConnection() types.FilterStatus {
-	log.DefaultLogger.Tracef("Tcp Proxy :: accept new connection")
+	if log.DefaultLogger.GetLogLevel() >= log.DEBUG {
+		log.DefaultLogger.Debugf("[tcpproxy] [new conn] accept new connection")
+	}
 	return p.initializeUpstreamConnection()
 }
 
@@ -94,7 +100,7 @@ func (p *proxy) InitializeReadFilterCallbacks(cb types.ReadFilterCallbacks) {
 func (p *proxy) initializeUpstreamConnection() types.FilterStatus {
 	clusterName := p.getUpstreamCluster()
 
-	clusterSnapshot := p.clusterManager.Get(nil, clusterName)
+	clusterSnapshot := p.clusterManager.GetClusterSnapshot(context.Background(), clusterName)
 
 	if reflect.ValueOf(clusterSnapshot).IsNil() {
 		p.requestInfo.SetResponseFlag(types.NoRouteFound)
@@ -113,27 +119,30 @@ func (p *proxy) initializeUpstreamConnection() types.FilterStatus {
 		return types.Stop
 	}
 
-	connectionData := p.clusterManager.TCPConnForCluster(nil, clusterName)
-
+	ctx := &LbContext{
+		conn: p.readCallbacks,
+	}
+	connectionData := p.clusterManager.TCPConnForCluster(ctx, clusterSnapshot)
 	if connectionData.Connection == nil {
 		p.requestInfo.SetResponseFlag(types.NoHealthyUpstream)
 		p.onInitFailure(NoHealthyUpstream)
 
 		return types.Stop
 	}
-
 	p.readCallbacks.SetUpstreamHost(connectionData.HostInfo)
 	clusterConnectionResource.Increase()
-
 	upstreamConnection := connectionData.Connection
 	upstreamConnection.AddConnectionEventListener(p.upstreamCallbacks)
 	upstreamConnection.FilterManager().AddReadFilter(p.upstreamCallbacks)
 	p.upstreamConnection = upstreamConnection
-
-	upstreamConnection.Connect(true)
+	if err := upstreamConnection.Connect(); err != nil {
+		p.requestInfo.SetResponseFlag(types.NoHealthyUpstream)
+		p.onInitFailure(NoHealthyUpstream)
+		return types.Stop
+	}
 
 	p.requestInfo.OnUpstreamHostSelected(connectionData.HostInfo)
-	p.requestInfo.SetUpstreamLocalAddress(upstreamConnection.LocalAddr())
+	p.requestInfo.SetUpstreamLocalAddress(connectionData.HostInfo.AddressString())
 
 	// TODO: update upstream stats
 
@@ -203,12 +212,6 @@ func (p *proxy) onDownstreamEvent(event types.ConnectionEvent) {
 			p.upstreamConnection.Close(types.FlushWrite, types.LocalClose)
 		} else if event == types.LocalClose {
 			p.upstreamConnection.Close(types.NoFlush, types.LocalClose)
-		}
-	}
-
-	if event.IsClose() {
-		for _, al := range p.accessLogs {
-			al.Log(nil, nil, p.requestInfo)
 		}
 	}
 }
@@ -397,4 +400,26 @@ type downstreamCallbacks struct {
 
 func (dc *downstreamCallbacks) OnEvent(event types.ConnectionEvent) {
 	dc.proxy.onDownstreamEvent(event)
+}
+
+// LbContext is a types.LoadBalancerContext implementation
+type LbContext struct {
+	conn types.ReadFilterCallbacks
+}
+
+func (c *LbContext) MetadataMatchCriteria() types.MetadataMatchCriteria {
+	return nil
+}
+
+func (c *LbContext) DownstreamConnection() net.Conn {
+	return c.conn.Connection().RawConn()
+}
+
+// TCP Proxy have no header
+func (c *LbContext) DownstreamHeaders() types.HeaderMap {
+	return nil
+}
+
+func (c *LbContext) DownstreamContext() context.Context {
+	return nil
 }

@@ -41,6 +41,7 @@ func (log *Logger) LoadConfiguration(filename string) Logger {
 			filename, err)
 		os.Exit(1)
 	}
+	defer fd.Close()
 
 	contents, err := ioutil.ReadAll(fd)
 	if err != nil {
@@ -83,6 +84,10 @@ func (log *Logger) LoadConfiguration(filename string) Logger {
 				"LoadConfiguration: Error: Required child <%s> for filter missing in %s\n",
 				"type", filename)
 			bad = true
+		} else {
+			if xmlfilt.Type == "record" {
+				continue
+			}
 		}
 		if len(xmlfilt.Level) == 0 {
 			fmt.Fprintf(os.Stderr,
@@ -91,22 +96,23 @@ func (log *Logger) LoadConfiguration(filename string) Logger {
 			bad = true
 		}
 
-		switch xmlfilt.Level {
-		case "FINEST":
+		xmlFiltLevel := strings.ToLower(xmlfilt.Level)
+		switch xmlFiltLevel {
+		case "finest":
 			lvl = FINEST
-		case "FINE":
+		case "fine":
 			lvl = FINE
-		case "DEBUG":
+		case "debug":
 			lvl = DEBUG
-		case "TRACE":
+		case "trace":
 			lvl = TRACE
-		case "INFO":
+		case "info":
 			lvl = INFO
-		case "WARNING":
+		case "warning":
 			lvl = WARNING
-		case "ERROR":
+		case "error":
 			lvl = ERROR
-		case "CRITICAL":
+		case "critical":
 			lvl = CRITICAL
 		default:
 			fmt.Fprintf(os.Stderr,

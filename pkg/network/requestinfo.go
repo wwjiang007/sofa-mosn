@@ -21,7 +21,7 @@ import (
 	"net"
 	"time"
 
-	"github.com/alipay/sofa-mosn/pkg/types"
+	"mosn.io/mosn/pkg/types"
 )
 
 // RequestInfo
@@ -31,11 +31,12 @@ type RequestInfo struct {
 	responseFlag             types.ResponseFlag
 	upstreamHost             types.HostInfo
 	requestReceivedDuration  time.Duration
+	requestFinishedDuration  time.Duration
 	responseReceivedDuration time.Duration
 	bytesSent                uint64
 	bytesReceived            uint64
-	responseCode             uint32
-	localAddress             net.Addr
+	responseCode             int
+	localAddress             string
 	downstreamLocalAddress   net.Addr
 	downstreamRemoteAddress  net.Addr
 	isHealthCheckRequest     bool
@@ -69,16 +70,25 @@ func (r *RequestInfo) RequestReceivedDuration() time.Duration {
 	return r.requestReceivedDuration
 }
 
-func (r *RequestInfo) SetRequestReceivedDuration(time time.Time) {
-	r.requestReceivedDuration = time.Sub(r.startTime)
+func (r *RequestInfo) SetRequestReceivedDuration(t time.Time) {
+	r.requestReceivedDuration = t.Sub(r.startTime)
 }
 
 func (r *RequestInfo) ResponseReceivedDuration() time.Duration {
 	return r.responseReceivedDuration
 }
 
-func (r *RequestInfo) SetResponseReceivedDuration(time time.Time) {
-	r.responseReceivedDuration = time.Sub(r.startTime)
+func (r *RequestInfo) SetResponseReceivedDuration(t time.Time) {
+	r.responseReceivedDuration = t.Sub(r.startTime)
+}
+
+func (r *RequestInfo) RequestFinishedDuration() time.Duration {
+	return r.requestFinishedDuration
+}
+
+func (r *RequestInfo) SetRequestFinishedDuration(t time.Time) {
+	r.requestFinishedDuration = t.Sub(r.startTime)
+
 }
 
 func (r *RequestInfo) BytesSent() uint64 {
@@ -101,8 +111,12 @@ func (r *RequestInfo) Protocol() types.Protocol {
 	return r.protocol
 }
 
-func (r *RequestInfo) ResponseCode() uint32 {
+func (r *RequestInfo) ResponseCode() int {
 	return r.responseCode
+}
+
+func (r *RequestInfo) SetResponseCode(code int) {
+	r.responseCode = code
 }
 
 func (r *RequestInfo) Duration() time.Duration {
@@ -125,11 +139,11 @@ func (r *RequestInfo) OnUpstreamHostSelected(host types.HostInfo) {
 	r.upstreamHost = host
 }
 
-func (r *RequestInfo) UpstreamLocalAddress() net.Addr {
+func (r *RequestInfo) UpstreamLocalAddress() string {
 	return r.localAddress
 }
 
-func (r *RequestInfo) SetUpstreamLocalAddress(addr net.Addr) {
+func (r *RequestInfo) SetUpstreamLocalAddress(addr string) {
 	r.localAddress = addr
 }
 

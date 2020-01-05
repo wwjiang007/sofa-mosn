@@ -18,253 +18,341 @@
 package log
 
 import (
-	"context"
+	"errors"
 	"fmt"
 	"io"
-	"log"
 	"os"
 	"path/filepath"
+	"runtime"
+	"runtime/debug"
 	"strings"
 	"sync"
+	"time"
 
-	"github.com/alipay/sofa-mosn/pkg/types"
-	"github.com/hashicorp/go-syslog"
+	gsyslog "github.com/hashicorp/go-syslog"
+	"mosn.io/mosn/pkg/buffer"
+	"mosn.io/mosn/pkg/types"
 )
 
-// Log Instance
 var (
-	DefaultLogger        *logger
-	StartLogger          *logger
+	// localOffset is offset in seconds east of UTC
+	_, localOffset = time.Now().Zone()
+	// error
+	ErrReopenUnsupported = errors.New("reopen unsupported")
+
 	remoteSyslogPrefixes = map[string]string{
 		"syslog+tcp://": "tcp",
 		"syslog+udp://": "udp",
 		"syslog://":     "udp",
 	}
-
-	//due to the fact that multiple access log owned by different listener can point to same log path
-	//make logger instance for each log path unique, and can be shared by different access log
-	// AccessLog x(path:/home/a, format:foo) -> RealLog a
-	// AccessLog y(path:/home/a, format:bar) -> RealLog a
-	// AccessLog z(path:/home/b)             -> RealLog b
-	loggers []*logger
 )
 
-func init() {
-	//use console  as start logger
-	StartLogger = &logger{
-		Output:  "",
-		Level:   INFO,
-		Roller:  DefaultRoller(),
-		fileMux: new(sync.RWMutex),
-	}
-
-	StartLogger.Start()
-	// default as start before Init
-	DefaultLogger = StartLogger
+// Logger is a basic sync logger implement, contains unexported fields
+// The Logger Function contains:
+// Print(buffer types.IoBuffer, discard bool) error
+// Printf(format string, args ...interface{})
+// Println(args ...interface{})
+// Fatalf(format string, args ...interface{})
+// Fatal(args ...interface{})
+// Fatalln(args ...interface{})
+// Close() error
+// Reopen() error
+// Toggle(disable bool)
+type Logger struct {
+	// output is the log's output path
+	// if output is empty(""), it is equals to stderr
+	output string
+	// writer writes the log, created by output
+	writer io.Writer
+	// roller rotates the log, if the output is a file path
+	roller *Roller
+	// disable presents the logger state. if disable is true, the logger will write nothing
+	// the default value is false
+	disable bool
+	// implementation elements
+	create          time.Time
+	reopenChan      chan struct{}
+	closeChan       chan struct{}
+	writeBufferChan chan types.IoBuffer
 }
 
-// Logger
-type logger struct {
-	*log.Logger
+// loggers keeps all Logger we created
+// key is output, same output reference the same Logger
+var loggers sync.Map // map[string]*Logger
 
-	Output  string
-	Level   Level
-	Roller  *Roller
-	writer  io.Writer
-	fileMux *sync.RWMutex
-}
-
-// InitDefaultLogger
-// start default logger
-func InitDefaultLogger(output string, level Level) error {
-	DefaultLogger = &logger{
-		Output:  output,
-		Level:   level,
-		Roller:  DefaultRoller(),
-		fileMux: new(sync.RWMutex),
+func GetOrCreateLogger(output string, roller *Roller) (*Logger, error) {
+	if lg, ok := loggers.Load(output); ok {
+		return lg.(*Logger), nil
 	}
 
-	loggers = append(loggers, DefaultLogger)
-
-	return DefaultLogger.Start()
-}
-
-// ByContext
-// Get default logger by context
-func ByContext(ctx context.Context) Logger {
-	if ctx != nil {
-		if logger := ctx.Value(types.ContextKeyLogger); logger != nil {
-			return logger.(Logger)
-		}
+	if roller == nil {
+		roller = &defaultRoller
 	}
 
-	if DefaultLogger == nil {
-		InitDefaultLogger("", DEBUG)
+	lg := &Logger{
+		output:          output,
+		roller:          roller,
+		writeBufferChan: make(chan types.IoBuffer, 500),
+		reopenChan:      make(chan struct{}),
+		closeChan:       make(chan struct{}),
+		// writer and create will be setted in start()
 	}
-
-	return DefaultLogger
+	err := lg.start()
+	if err == nil { // only keeps start success logger
+		loggers.Store(output, lg)
+	}
+	return lg, err
 }
 
-// GetLoggerInstance
-// get logger instance which has the same 'output' and 'level'
-func GetLoggerInstance(output string, level Level) (Logger, error) {
-	for _, logger := range loggers {
-		if logger.Output == output && logger.Level == level {
-			return logger, nil
-		}
-	}
-
-	return NewLogger(output, level)
-}
-
-// NewLogger
-func NewLogger(output string, level Level) (Logger, error) {
-	logger := &logger{
-		Output:  output,
-		Level:   level,
-		Roller:  DefaultRoller(),
-		fileMux: new(sync.RWMutex),
-	}
-
-	loggers = append(loggers, logger)
-
-	return logger, logger.Start()
-}
-
-func (l *logger) Start() error {
-	var err error
-
-selectwriter:
-	switch l.Output {
+func (l *Logger) start() error {
+	switch l.output {
 	case "", "stderr", "/dev/stderr":
 		l.writer = os.Stderr
 	case "stdout", "/dev/stdout":
 		l.writer = os.Stdout
 	case "syslog":
-		l.writer, err = gsyslog.NewLogger(gsyslog.LOG_ERR, "LOCAL0", "mosn")
+		writer, err := gsyslog.NewLogger(gsyslog.LOG_ERR, "LOCAL0", "mosn")
 		if err != nil {
 			return err
 		}
+		l.writer = writer
 	default:
-		if address := parseSyslogAddress(l.Output); address != nil {
-			l.writer, err = gsyslog.DialLogger(address.network, address.address, gsyslog.LOG_ERR, "LOCAL0", "mosn")
-
+		if address := parseSyslogAddress(l.output); address != nil {
+			writer, err := gsyslog.DialLogger(address.network, address.address, gsyslog.LOG_ERR, "LOCAL0", "mosn")
 			if err != nil {
 				return err
 			}
-
-			break selectwriter
+			l.writer = writer
+		} else { // write to file
+			if err := os.MkdirAll(filepath.Dir(l.output), 0755); err != nil {
+				return err
+			}
+			file, err := os.OpenFile(l.output, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0644)
+			if err != nil {
+				return err
+			}
+			if l.roller.MaxTime == 0 {
+				file.Close()
+				l.roller.Filename = l.output
+				l.writer = l.roller.GetLogWriter()
+			} else {
+				// time.Now() faster than reported timestamps from filesystem (https://github.com/golang/go/issues/33510)
+				// init logger
+				if l.create.IsZero() {
+					stat, err := file.Stat()
+					if err != nil {
+						return err
+					}
+					l.create = stat.ModTime()
+				} else {
+					l.create = time.Now()
+				}
+				l.writer = file
+			}
 		}
+	}
+	// TODO: recover?
+	go l.handler()
+	return nil
+}
 
-		var file *os.File
+func (l *Logger) handler() {
+	defer func() {
+		if p := recover(); p != nil {
+			debug.PrintStack()
+			// TODO: recover?
+			go l.handler()
+		}
+	}()
+	var buf types.IoBuffer
+	for {
+		select {
+		case <-l.reopenChan:
+			// reopen is used for roller
+			err := l.reopen()
+			if err == nil {
+				return
+			}
+			DefaultLogger.Infof("%s reopen failed : %v", l.output, err)
+		case <-l.closeChan:
+			// flush all buffers before close
+			// make sure all logs are outputed
+			// a closed logger can not write anymore
+			for {
+				select {
+				case buf = <-l.writeBufferChan:
+					buf.WriteTo(l)
+					buffer.PutIoBuffer(buf)
+				default:
+					l.stop()
+					return
+				}
+			}
+		case buf = <-l.writeBufferChan:
+			for i := 0; i < 20; i++ {
+				select {
+				case b := <-l.writeBufferChan:
+					buf.Write(b.Bytes())
+					buffer.PutIoBuffer(b)
+				default:
+					break
+				}
+			}
+			buf.WriteTo(l)
+			buffer.PutIoBuffer(buf)
+		}
+		runtime.Gosched()
+	}
+}
 
-		//create parent dir if not exists
-		err := os.MkdirAll(filepath.Dir(l.Output), 0755)
+func (l *Logger) stop() error {
+	if l.writer == os.Stdout || l.writer == os.Stderr {
+		return nil
+	}
 
-		fmt.Println(err)
+	if closer, ok := l.writer.(io.WriteCloser); ok {
+		err := closer.Close()
+		return err
+	}
 
-		file, err = os.OpenFile(l.Output, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0644)
+	return nil
+}
+
+func (l *Logger) reopen() error {
+	if l.writer == os.Stdout || l.writer == os.Stderr {
+		return ErrReopenUnsupported
+	}
+	if closer, ok := l.writer.(io.WriteCloser); ok {
+		err := closer.Close()
 		if err != nil {
 			return err
 		}
+		return l.start()
+	}
+	return ErrReopenUnsupported
+}
 
-		if l.Roller != nil {
-			file.Close()
-			l.Roller.Filename = l.Output
-			l.writer = l.Roller.GetLogWriter()
+// Print writes the final buffere to the buffer chan
+// if discard is true and the buffer is full, returns an error
+func (l *Logger) Print(buf types.IoBuffer, discard bool) error {
+	if l.disable {
+		// free the buf
+		buffer.PutIoBuffer(buf)
+		return nil
+	}
+	select {
+	case l.writeBufferChan <- buf:
+	default:
+		// todo: configurable
+		if discard {
+			return types.ErrChanFull
 		} else {
-			l.writer = file
+			l.writeBufferChan <- buf
 		}
 	}
-
-	l.Logger = log.New(l.writer, "", log.LstdFlags)
-
 	return nil
 }
 
-func (l *logger) Println(args ...interface{}) {
-	l.fileMux.RLock()
-	l.Logger.Println(args...)
-	l.fileMux.RUnlock()
+func (l *Logger) Println(args ...interface{}) {
+	if l.disable {
+		return
+	}
+	s := fmt.Sprintln(args...)
+	buf := buffer.GetIoBuffer(len(s))
+	buf.WriteString(s)
+	if len(s) == 0 || s[len(s)-1] != '\n' {
+		buf.WriteString("\n")
+	}
+	l.Print(buf, true)
 }
 
-func (l *logger) Printf(format string, args ...interface{}) {
-	l.fileMux.RLock()
-	l.Logger.Printf(format, args...)
-	l.fileMux.RUnlock()
+func (l *Logger) Printf(format string, args ...interface{}) {
+	if l.disable {
+		return
+	}
+	s := fmt.Sprintf(format, args...)
+	buf := buffer.GetIoBuffer(len(s))
+	buf.WriteString(s)
+	if len(s) == 0 || s[len(s)-1] != '\n' {
+		buf.WriteString("\n")
+	}
+	l.Print(buf, true)
 }
 
-func (l *logger) Infof(format string, args ...interface{}) {
-	if l.Level >= INFO {
-		l.Printf(InfoPre+format, args...)
-	}
+// Fatal cannot be disabled
+func (l *Logger) Fatalf(format string, args ...interface{}) {
+	s := fmt.Sprintf(format, args...)
+	buf := buffer.GetIoBuffer(len(s))
+	buf.WriteString(s)
+	buf.WriteString("\n")
+	buf.WriteTo(l.writer)
+	os.Exit(1)
 }
 
-func (l *logger) Debugf(format string, args ...interface{}) {
-	if l.Level >= DEBUG {
-		l.Printf(DebugPre+format, args...)
+func (l *Logger) Fatal(args ...interface{}) {
+	s := fmt.Sprint(args...)
+	buf := buffer.GetIoBuffer(len(s))
+	buf.WriteString(logTime() + " " + FatalPre)
+	buf.WriteString(s)
+	if len(s) == 0 || s[len(s)-1] != '\n' {
+		buf.WriteString("\n")
 	}
+	buf.WriteTo(l.writer)
+	os.Exit(1)
 }
 
-func (l *logger) Warnf(format string, args ...interface{}) {
-	if l.Level >= WARN {
-		l.Printf(WarnPre+format, args...)
+func (l *Logger) Fatalln(args ...interface{}) {
+	s := fmt.Sprintln(args...)
+	buf := buffer.GetIoBuffer(len(s))
+	buf.WriteString(logTime() + " " + FatalPre)
+	buf.WriteString(s)
+	if len(s) == 0 || s[len(s)-1] != '\n' {
+		buf.WriteString("\n")
 	}
+	buf.WriteTo(l.writer)
+	os.Exit(1)
 }
 
-func (l *logger) Errorf(format string, args ...interface{}) {
-	if l.Level >= ERROR {
-		l.Printf(ErrorPre+format, args...)
-	}
-}
-
-func (l *logger) Tracef(format string, args ...interface{}) {
-	if l.Level >= TRACE {
-		l.Printf(TracePre+format, args...)
-	}
-}
-
-func (l *logger) Fatalf(format string, args ...interface{}) {
-	if l.Level >= FATAL {
-		l.Printf(FatalPre+format, args...)
-	}
-}
-
-func (l *logger) Close() error {
-	if l.writer == os.Stdout || l.writer == os.Stderr {
-		return nil
-	}
-
-	if closer, ok := l.writer.(io.WriteCloser); ok {
-		l.fileMux.Lock()
-		err := closer.Close()
-		l.fileMux.Unlock()
-		return err
-	}
-
-	return nil
-}
-
-func (l *logger) Reopen() error {
-	if l.writer == os.Stdout || l.writer == os.Stderr {
-		return nil
-	}
-
-	if closer, ok := l.writer.(io.WriteCloser); ok {
-		l.fileMux.Lock()
-		err := closer.Close()
-
-		if err := l.Start(); err != nil {
-			return err
+func (l *Logger) Write(p []byte) (n int, err error) {
+	// default roller by daily
+	if !l.create.IsZero() {
+		now := time.Now()
+		if (l.create.Unix()+int64(localOffset))/(l.roller.MaxTime) !=
+			(now.Unix()+int64(localOffset))/(l.roller.MaxTime) {
+			// ignore the rename error, in case the l.output is deleted
+			if l.roller.MaxTime == defaultRotateTime {
+				os.Rename(l.output, l.output+"."+l.create.Format("2006-01-02"))
+			} else {
+				os.Rename(l.output, l.output+"."+l.create.Format("2006-01-02_15"))
+			}
+			l.create = now
+			//TODO: recover?
+			go l.Reopen()
 		}
-
-		l.fileMux.Unlock()
-		return err
 	}
+	return l.writer.Write(p)
+}
 
+func (l *Logger) Close() error {
+	l.closeChan <- struct{}{}
 	return nil
 }
 
+func (l *Logger) Reopen() error {
+	defer func() {
+		if r := recover(); r != nil {
+			debug.PrintStack()
+		}
+	}()
+	l.reopenChan <- struct{}{}
+	return nil
+}
+
+func (l *Logger) Toggle(disable bool) {
+	l.disable = disable
+}
+
+// syslogAddress
 type syslogAddress struct {
 	network string
 	address string
@@ -277,28 +365,6 @@ func parseSyslogAddress(location string) *syslogAddress {
 				network: network,
 				address: strings.TrimPrefix(location, prefix),
 			}
-		}
-	}
-
-	return nil
-}
-
-// Reopen all logger
-func Reopen() error {
-	for _, logger := range loggers {
-		if err := logger.Reopen(); err != nil {
-			return err
-		}
-	}
-
-	return nil
-}
-
-// CloseAll logger
-func CloseAll() error {
-	for _, logger := range loggers {
-		if err := logger.Close(); err != nil {
-			return err
 		}
 	}
 

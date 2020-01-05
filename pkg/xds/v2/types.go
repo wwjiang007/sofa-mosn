@@ -18,22 +18,17 @@
 package v2
 
 import (
+	"sync"
 	"time"
 
-	"github.com/alipay/sofa-mosn/pkg/config"
-	xdsapi "github.com/envoyproxy/go-control-plane/envoy/api/v2"
+	envoy_api_v2 "github.com/envoyproxy/go-control-plane/envoy/api/v2"
+	envoy_api_v2_auth "github.com/envoyproxy/go-control-plane/envoy/api/v2/auth"
 	core "github.com/envoyproxy/go-control-plane/envoy/api/v2/core"
 	ads "github.com/envoyproxy/go-control-plane/envoy/service/discovery/v2"
 	"golang.org/x/net/context"
 	"google.golang.org/grpc"
+	"mosn.io/mosn/pkg/config"
 )
-
-// ClientV2 contains config which v2 module needed
-type ClientV2 struct {
-	ServiceCluster string
-	ServiceNode    string
-	Config         *XDSConfig
-}
 
 // XDSConfig contains ADS config and clusters info
 type XDSConfig struct {
@@ -43,9 +38,10 @@ type XDSConfig struct {
 
 // ClusterConfig contains an cluster info from static resources
 type ClusterConfig struct {
-	LbPolicy       xdsapi.Cluster_LbPolicy
+	LbPolicy       envoy_api_v2.Cluster_LbPolicy
 	Address        []string
 	ConnectTimeout *time.Duration
+	TlsContext     *envoy_api_v2_auth.UpstreamTlsContext
 }
 
 // ADSConfig contains ADS config from dynamic resources
@@ -58,13 +54,13 @@ type ADSConfig struct {
 
 // ADSClient communicated with pilot
 type ADSClient struct {
-	AdsConfig       *ADSConfig
-	StreamClient    ads.AggregatedDiscoveryService_StreamAggregatedResourcesClient
-	V2Client        *ClientV2
-	MosnConfig      *config.MOSNConfig
-	SendControlChan chan int
-	RecvControlChan chan int
-	StopChan        chan int
+	AdsConfig         *ADSConfig
+	StreamClientMutex sync.RWMutex
+	StreamClient      ads.AggregatedDiscoveryService_StreamAggregatedResourcesClient
+	MosnConfig        *config.MOSNConfig
+	SendControlChan   chan int
+	RecvControlChan   chan int
+	StopChan          chan int
 }
 
 // ServiceConfig for grpc service
@@ -79,3 +75,6 @@ type StreamClient struct {
 	Conn   *grpc.ClientConn
 	Cancel context.CancelFunc
 }
+
+// TypeURLHandleFunc is a function that used to parse ads type url data
+type TypeURLHandleFunc func(client *ADSClient, resp *envoy_api_v2.DiscoveryResponse)

@@ -20,46 +20,34 @@ package router
 import (
 	"regexp"
 
-	"github.com/alipay/sofa-mosn/pkg/api/v2"
-	"github.com/alipay/sofa-mosn/pkg/log"
-	"github.com/alipay/sofa-mosn/pkg/types"
+	"mosn.io/mosn/pkg/api/v2"
+	"mosn.io/mosn/pkg/log"
+	"mosn.io/mosn/pkg/types"
 )
 
-// getClusterMosnLBMetaDataMap from v2.Metadata
-// e.g. metadata =  { "filter_metadata": {"mosn.lb": { "label": "gray"  } } }
-// 4-tier map
-func getClusterMosnLBMetaDataMap(metadata v2.Metadata) types.RouteMetaData {
-	metadataMap := make(map[string]types.HashedValue)
-	for key, value := range metadata {
-		metadataMap[key] = types.GenerateHashedValue(value)
-	}
-
-	return metadataMap
-}
-
-// Note
-// "runtimeKey" and "loader" are not used currently
 func getWeightedClusterEntry(weightedClusters []v2.WeightedCluster) (map[string]weightedClusterEntry, uint32) {
-	var weightedClusterEntries = make(map[string]weightedClusterEntry)
+	weightedClusterEntries := make(map[string]weightedClusterEntry)
 	var totalWeight uint32
 	for _, weightedCluster := range weightedClusters {
-		subsetLBMetaData := weightedCluster.Cluster.MetadataMatch
-		totalWeight = totalWeight + weightedCluster.Cluster.Weight
-
 		weightedClusterEntries[weightedCluster.Cluster.Name] = weightedClusterEntry{
 			clusterName:                  weightedCluster.Cluster.Name,
 			clusterWeight:                weightedCluster.Cluster.Weight,
-			clusterMetadataMatchCriteria: NewMetadataMatchCriteriaImpl(subsetLBMetaData),
+			clusterMetadataMatchCriteria: NewMetadataMatchCriteriaImpl(weightedCluster.Cluster.MetadataMatch),
 		}
+		totalWeight = totalWeight + weightedCluster.Cluster.Weight
 	}
-
 	return weightedClusterEntries, totalWeight
 }
 
-func getRouterHeaders(heades []v2.HeaderMatcher) []*types.HeaderData {
+// GetRouterHeaders exports getRouterHeaders
+func GetRouterHeaders(headers []v2.HeaderMatcher) []*types.HeaderData {
+	return getRouterHeaders(headers)
+}
+
+func getRouterHeaders(headers []v2.HeaderMatcher) []*types.HeaderData {
 	var headerDatas []*types.HeaderData
 
-	for _, header := range heades {
+	for _, header := range headers {
 		headerData := &types.HeaderData{
 			Name: &lowerCaseString{
 				header.Name,
@@ -69,12 +57,12 @@ func getRouterHeaders(heades []v2.HeaderMatcher) []*types.HeaderData {
 		}
 
 		if header.Regex {
-			if pattern, err := regexp.Compile(header.Name); err != nil {
-				headerData.RegexPattern = pattern
-			} else {
+			pattern, err := regexp.Compile(header.Value)
+			if err != nil {
 				log.DefaultLogger.Errorf("getRouterHeaders compile error")
 				continue
 			}
+			headerData.RegexPattern = pattern
 		}
 
 		headerDatas = append(headerDatas, headerData)

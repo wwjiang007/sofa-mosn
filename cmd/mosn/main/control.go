@@ -18,14 +18,20 @@
 package main
 
 import (
+	"fmt"
 	"net/http"
 	_ "net/http/pprof"
+	"os"
+	"runtime"
 
-	"github.com/alipay/sofa-mosn/pkg/admin"
-	"github.com/alipay/sofa-mosn/pkg/config"
-	"github.com/alipay/sofa-mosn/pkg/mosn"
-	"github.com/alipay/sofa-mosn/pkg/server"
 	"github.com/urfave/cli"
+	"mosn.io/mosn/pkg/admin/store"
+	"mosn.io/mosn/pkg/config"
+	"mosn.io/mosn/pkg/featuregate"
+	"mosn.io/mosn/pkg/log"
+	"mosn.io/mosn/pkg/metrics"
+	"mosn.io/mosn/pkg/mosn"
+	"mosn.io/mosn/pkg/types"
 )
 
 var (
@@ -46,23 +52,46 @@ var (
 				Name:   "service-node, n",
 				Usage:  "sidecar service node",
 				EnvVar: "SERVICE_NODE",
+			}, cli.StringFlag{
+				Name:   "feature-gates, f",
+				Usage:  "config feature gates",
+				EnvVar: "FEATURE_GATES",
 			},
 		},
 		Action: func(c *cli.Context) error {
-			go func() {
-				// pprof server
-				s := &http.Server{Addr: "0.0.0.0:9090", Handler: nil}
-				server.AddStoppable(s)
-				s.ListenAndServe()
-			}()
 			configPath := c.String("config")
 			serviceCluster := c.String("service-cluster")
 			serviceNode := c.String("service-node")
 			conf := config.Load(configPath)
-			// start admin server
-			adminServer := admin.Server{}
-			adminServer.Start(conf)
-			mosn.Start(conf, serviceCluster, serviceNode)
+			// set feature gates
+			err := featuregate.DefaultMutableFeatureGate.Set(c.String("feature-gates"))
+			if err != nil {
+				log.StartLogger.Infof("[mosn] [start] parse feature-gates flag fail : %+v", err)
+				os.Exit(1)
+			}
+			err = featuregate.DefaultMutableFeatureGate.StartInit()
+			if err != nil {
+				log.StartLogger.Infof("[mosn] [start] init feature-gates fail : %+v", err)
+				os.Exit(1)
+			}
+
+			// start pprof
+			if conf.Debug.StartDebug {
+				port := 9090 //default use 9090
+				if conf.Debug.Port != 0 {
+					port = conf.Debug.Port
+				}
+				addr := fmt.Sprintf("0.0.0.0:%d", port)
+				s := &http.Server{Addr: addr, Handler: nil}
+				store.AddService(s, "pprof", nil, nil)
+			}
+			// set mosn metrics flush
+			metrics.FlushMosnMetrics = true
+			// set version and go version
+			metrics.SetVersion(Version)
+			metrics.SetGoVersion(runtime.Version())
+			initXdsFlags(serviceCluster, serviceNode)
+			mosn.Start(conf)
 			return nil
 		},
 	}
@@ -83,3 +112,9 @@ var (
 		},
 	}
 )
+
+func initXdsFlags(serviceCluster, serviceNode string) {
+	info := types.GetGlobalXdsInfo()
+	info.ServiceCluster = serviceCluster
+	info.ServiceNode = serviceNode
+}

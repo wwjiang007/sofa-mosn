@@ -20,39 +20,55 @@ package network
 import (
 	"context"
 	"net"
+	"os"
 	"runtime/debug"
+	"sync"
 	"time"
 
-	"github.com/alipay/sofa-mosn/pkg/api/v2"
-	"github.com/alipay/sofa-mosn/pkg/log"
-	"github.com/alipay/sofa-mosn/pkg/types"
+	"mosn.io/mosn/pkg/api/v2"
+	"mosn.io/mosn/pkg/log"
+	"mosn.io/mosn/pkg/types"
+	"mosn.io/mosn/pkg/utils"
+)
+
+type ListenerState int
+
+// listener state
+// ListenerInited means listener is inited, a inited listener can be started or stopped
+// ListenerRunning means listener is running, start a running listener will be ignored.
+// ListenerStopped means listener is stopped, start a stopped listener without restart flag will be ignored.
+const (
+	ListenerInited ListenerState = iota
+	ListenerRunning
+	ListenerStopped
 )
 
 // listener impl based on golang net package
 type listener struct {
-	name                                  string
-	localAddress                          net.Addr
-	bindToPort                            bool
-	listenerTag                           uint64
-	perConnBufferLimitBytes               uint32
-	handOffRestoredDestinationConnections bool
-	cb                                    types.ListenerEventListener
-	rawl                                  *net.TCPListener
-	logger                                log.Logger
-	config                                *v2.Listener
+	name                    string
+	localAddress            net.Addr
+	bindToPort              bool
+	listenerTag             uint64
+	perConnBufferLimitBytes uint32
+	useOriginalDst          bool
+	cb                      types.ListenerEventListener
+	rawl                    *net.TCPListener
+	config                  *v2.Listener
+	mutex                   sync.Mutex
+	// listener state indicates the listener's running state. The listener state effects if a listener binded to a port
+	state ListenerState
 }
 
-func NewListener(lc *v2.Listener, logger log.Logger) types.Listener {
+func NewListener(lc *v2.Listener) types.Listener {
 
 	l := &listener{
-		name:                                  lc.Name,
-		localAddress:                          lc.Addr,
-		bindToPort:                            lc.BindToPort,
-		listenerTag:                           lc.ListenerTag,
-		perConnBufferLimitBytes:               lc.PerConnBufferLimitBytes,
-		handOffRestoredDestinationConnections: lc.HandOffRestoredDestinationConnections,
-		logger: logger,
-		config: lc,
+		name:                    lc.Name,
+		localAddress:            lc.Addr,
+		bindToPort:              lc.BindToPort,
+		listenerTag:             lc.ListenerTag,
+		perConnBufferLimitBytes: lc.PerConnBufferLimitBytes,
+		useOriginalDst:          lc.UseOriginalDst,
+		config:                  lc,
 	}
 
 	if lc.InheritListener != nil {
@@ -78,22 +94,53 @@ func (l *listener) Addr() net.Addr {
 	return l.localAddress
 }
 
-func (l *listener) Start(lctx context.Context) {
+func (l *listener) Start(lctx context.Context, restart bool) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.DefaultLogger.Errorf("[network] [listener start] panic %v\n%s", r, string(debug.Stack()))
+		}
+	}()
 
 	if l.bindToPort {
-		//call listen if not inherit
-		if l.rawl == nil {
-			if err := l.listen(lctx); err != nil {
-				// TODO: notify listener callbacks
-				log.StartLogger.Fatalln(l.name, " listen failed, ", err)
-				return
+		ignore := func() bool {
+			l.mutex.Lock()
+			defer l.mutex.Unlock()
+			switch l.state {
+			case ListenerRunning:
+				// if listener is running, ignore start
+				log.DefaultLogger.Debugf("[network] [listener start] %s is running", l.name)
+				return true
+			case ListenerStopped:
+				if !restart {
+					return true
+				}
+				log.DefaultLogger.Infof("[network] [listener start] %s restart listener ", l.name)
+				if err := l.listen(lctx); err != nil {
+					// TODO: notify listener callbacks
+					log.DefaultLogger.Errorf("[network] [listener start] [listen] %s listen failed, %v", l.name, err)
+					return true
+				}
+			default:
+				// try start listener
+				//call listen if not inherit
+				if l.rawl == nil {
+					if err := l.listen(lctx); err != nil {
+						// TODO: notify listener callbacks
+						log.StartLogger.Fatalf("[network] [listener start] [listen] %s listen failed, %v", l.name, err)
+					}
+				}
 			}
+			l.state = ListenerRunning
+			return false
+		}()
+		if ignore {
+			return
 		}
 
 		for {
 			if err := l.accept(lctx); err != nil {
 				if nerr, ok := err.(net.Error); ok && nerr.Timeout() {
-					l.logger.Infof("listener %s stop accepting connections by deadline", l.name)
+					log.DefaultLogger.Infof("[network] [listener start] [accept] listener %s stop accepting connections by deadline", l.name)
 					return
 				} else if ope, ok := err.(*net.OpError); ok {
 					// not timeout error and not temporary, which means the error is non-recoverable
@@ -101,14 +148,14 @@ func (l *listener) Start(lctx context.Context) {
 					if !(ope.Timeout() && ope.Temporary()) {
 						// accept error raised by sockets closing
 						if ope.Op == "accept" {
-							l.logger.Infof("listener %s %s closed", l.name, l.Addr())
+							log.DefaultLogger.Infof("[network] [listener start] [accept] listener %s %s closed", l.name, l.Addr())
 						} else {
-							l.logger.Errorf("listener %s occurs non-recoverable error, stop listening and accepting:%s", l.name, err.Error())
+							log.DefaultLogger.Errorf("[network] [listener start] [accept] listener %s occurs non-recoverable error, stop listening and accepting:%s", l.name, err.Error())
 						}
 						return
 					}
 				} else {
-					l.logger.Errorf("listener %s occurs unknown error while accepting:%s", l.name, err.Error())
+					log.DefaultLogger.Errorf("[network] [listener start] [accept] listener %s occurs unknown error while accepting:%s", l.name, err.Error())
 				}
 			}
 		}
@@ -127,14 +174,8 @@ func (l *listener) SetListenerTag(tag uint64) {
 	l.listenerTag = tag
 }
 
-func (l *listener) ListenerFD() (uintptr, error) {
-	file, err := l.rawl.File()
-	if err != nil {
-		l.logger.Errorf(" listener %s fd not found : %v", l.name, err)
-		return 0, err
-	}
-	//defer file.Close()
-	return file.Fd(), nil
+func (l *listener) ListenerFile() (*os.File, error) {
+	return l.rawl.File()
 }
 
 func (l *listener) PerConnBufferLimitBytes() uint32 {
@@ -153,17 +194,23 @@ func (l *listener) GetListenerCallbacks() types.ListenerEventListener {
 	return l.cb
 }
 
-func (l *listener) SetHandOffRestoredDestinationConnections(restoredDestation bool) {
-	l.handOffRestoredDestinationConnections = restoredDestation
+func (l *listener) SetUseOriginalDst(use bool) {
+	l.useOriginalDst = use
 }
 
-func (l *listener) HandOffRestoredDestinationConnections() bool {
-	return l.handOffRestoredDestinationConnections
+func (l *listener) UseOriginalDst() bool {
+	return l.useOriginalDst
 }
 
 func (l *listener) Close(lctx context.Context) error {
-	l.cb.OnClose()
-	return l.rawl.Close()
+	l.mutex.Lock()
+	defer l.mutex.Unlock()
+	l.state = ListenerStopped
+	if l.rawl != nil {
+		l.cb.OnClose()
+		return l.rawl.Close()
+	}
+	return nil
 }
 
 func (l *listener) listen(lctx context.Context) error {
@@ -187,17 +234,9 @@ func (l *listener) accept(lctx context.Context) error {
 	}
 
 	// TODO: use thread pool
-	go func() {
-		defer func() {
-			if p := recover(); p != nil {
-				l.logger.Errorf("panic %v", p)
-
-				debug.PrintStack()
-			}
-		}()
-
-		l.cb.OnAccept(rawc, l.handOffRestoredDestinationConnections, nil, nil, nil)
-	}()
+	utils.GoWithRecover(func() {
+		l.cb.OnAccept(rawc, l.useOriginalDst, nil, nil, nil)
+	}, nil)
 
 	return nil
 }

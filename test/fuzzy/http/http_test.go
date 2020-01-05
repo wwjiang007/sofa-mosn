@@ -9,13 +9,13 @@ import (
 	"testing"
 	"time"
 
-	_ "github.com/alipay/sofa-mosn/pkg/filter/network/proxy"
-	"github.com/alipay/sofa-mosn/pkg/log"
-	_ "github.com/alipay/sofa-mosn/pkg/stream/http"
-	_ "github.com/alipay/sofa-mosn/pkg/stream/http2"
-	_ "github.com/alipay/sofa-mosn/pkg/stream/sofarpc"
-	"github.com/alipay/sofa-mosn/test/fuzzy"
-	"github.com/alipay/sofa-mosn/test/util"
+	_ "mosn.io/mosn/pkg/filter/network/proxy"
+	"mosn.io/mosn/pkg/log"
+	_ "mosn.io/mosn/pkg/stream/http"
+	_ "mosn.io/mosn/pkg/stream/http2"
+	_ "mosn.io/mosn/pkg/stream/sofarpc"
+	"mosn.io/mosn/test/fuzzy"
+	"mosn.io/mosn/test/util"
 )
 
 var (
@@ -82,9 +82,6 @@ func NewHTTPServer(t *testing.T, id string, addr string) *HTTPServer {
 }
 
 func (s *HTTPServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	for k := range r.Header {
-		w.Header().Set(k, r.Header.Get(k))
-	}
 	fmt.Fprintf(w, "\nRequestId:%s\n", r.Header.Get("Requestid"))
 }
 
@@ -126,11 +123,14 @@ func (s *HTTPServer) ReStart() {
 	go s.server.ListenAndServe()
 }
 
-func CreateServers(t *testing.T, serverList []string, stop chan struct{}) []fuzzy.Server {
+func CreateServers(t *testing.T, serverList []string, stop chan struct{}, keepalive bool) []fuzzy.Server {
 	var servers []fuzzy.Server
 	for i, s := range serverList {
 		id := fmt.Sprintf("server#%d", i)
 		server := NewHTTPServer(t, id, s)
+		if !keepalive {
+			server.server.SetKeepAlivesEnabled(false)
+		}
 		server.GoServe()
 		go func(server *HTTPServer) {
 			<-stop

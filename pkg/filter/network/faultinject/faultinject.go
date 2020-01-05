@@ -22,8 +22,9 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/alipay/sofa-mosn/pkg/api/v2"
-	"github.com/alipay/sofa-mosn/pkg/types"
+	"mosn.io/mosn/pkg/api/v2"
+	"mosn.io/mosn/pkg/types"
+	"mosn.io/mosn/pkg/utils"
 )
 
 type faultInjector struct {
@@ -69,13 +70,13 @@ func (fi *faultInjector) tryInjectDelay() {
 
 	if duration > 0 {
 		if atomic.CompareAndSwapUint32(&fi.delaying, 0, 1) {
-			go func() {
+			utils.GoWithRecover(func() {
 				select {
 				case <-time.After(time.Duration(duration) * time.Millisecond):
 					atomic.StoreUint32(&fi.delaying, 0)
 					fi.readCallbacks.ContinueReading()
 				}
-			}()
+			}, nil)
 		}
 	}
 }

@@ -1,21 +1,21 @@
 package main
 
 import (
-	"encoding/json"
 	"flag"
 	"net/http"
 	"time"
 
-	_ "github.com/alipay/sofa-mosn/pkg/filter/network/proxy"
-	"github.com/alipay/sofa-mosn/pkg/mosn"
-	"github.com/alipay/sofa-mosn/pkg/protocol"
-	_ "github.com/alipay/sofa-mosn/pkg/protocol/sofarpc/codec"
-	"github.com/alipay/sofa-mosn/pkg/stats"
-	_ "github.com/alipay/sofa-mosn/pkg/stream/http"
-	_ "github.com/alipay/sofa-mosn/pkg/stream/http2"
-	_ "github.com/alipay/sofa-mosn/pkg/stream/sofarpc"
-	"github.com/alipay/sofa-mosn/pkg/types"
-	"github.com/alipay/sofa-mosn/test/util"
+	_ "mosn.io/mosn/pkg/filter/network/proxy"
+	"mosn.io/mosn/pkg/metrics"
+	"mosn.io/mosn/pkg/metrics/sink/console"
+	"mosn.io/mosn/pkg/mosn"
+	"mosn.io/mosn/pkg/protocol"
+	_ "mosn.io/mosn/pkg/protocol/rpc/sofarpc/codec"
+	_ "mosn.io/mosn/pkg/stream/http"
+	_ "mosn.io/mosn/pkg/stream/http2"
+	_ "mosn.io/mosn/pkg/stream/sofarpc"
+	"mosn.io/mosn/pkg/types"
+	"mosn.io/mosn/test/util"
 )
 
 func main() {
@@ -79,7 +79,5 @@ func (p *Proxy) DestroyConn(w http.ResponseWriter, r *http.Request) {
 }
 
 func (p *Proxy) Stats(w http.ResponseWriter, r *http.Request) {
-	alldata := stats.GetAllMetricsData()
-	b, _ := json.MarshalIndent(alldata, "", "\t")
-	w.Write(b)
+	console.NewConsoleSink().Flush(w, metrics.GetAll())
 }

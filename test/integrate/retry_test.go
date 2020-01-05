@@ -4,15 +4,16 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
-	"github.com/alipay/sofa-mosn/pkg/mosn"
-	"github.com/alipay/sofa-mosn/pkg/protocol"
-	"github.com/alipay/sofa-mosn/pkg/protocol/sofarpc"
-	"github.com/alipay/sofa-mosn/pkg/protocol/sofarpc/codec"
-	"github.com/alipay/sofa-mosn/pkg/types"
-	"github.com/alipay/sofa-mosn/test/util"
+	"mosn.io/mosn/pkg/mosn"
+	"mosn.io/mosn/pkg/protocol"
+	"mosn.io/mosn/pkg/protocol/rpc/sofarpc"
+	"mosn.io/mosn/pkg/protocol/rpc/sofarpc/codec"
+	"mosn.io/mosn/pkg/types"
+	"mosn.io/mosn/test/util"
 )
 
 type RetryCase struct {
@@ -28,10 +29,10 @@ func NewRetryCase(t *testing.T, serverProto, meshProto types.Protocol, isClose b
 	var good, bad util.UpstreamServer
 	switch serverProto {
 	case protocol.HTTP1:
-		good = util.NewHTTPServer(t, nil)
+		good = util.NewHTTPServer(t, &PathHTTPHandler{})
 		bad = util.NewHTTPServer(t, &BadHTTPHandler{})
 	case protocol.HTTP2:
-		good = util.NewUpstreamHTTP2(t, app1, nil)
+		good = util.NewUpstreamHTTP2(t, app1, &PathHTTPHandler{})
 		bad = util.NewUpstreamHTTP2(t, app2, &BadHTTPHandler{})
 	case protocol.SofaRPC:
 		good = util.NewRPCServer(t, app1, util.Bolt1)
@@ -63,12 +64,13 @@ func (c *RetryCase) StartProxy() {
 	mesh := mosn.NewMosn(cfg)
 	go mesh.Start()
 	go func() {
-		<-c.Stop
+		<-c.Finish
 		c.GoodServer.Close()
 		if !c.BadIsClose {
 			c.BadServer.Close()
 		}
 		mesh.Close()
+		c.Finish <- true
 	}()
 	time.Sleep(5 * time.Second) //wait server and mesh start
 
@@ -89,14 +91,25 @@ func (c *RetryCase) Start(tls bool) {
 	mesh := mosn.NewMosn(cfg)
 	go mesh.Start()
 	go func() {
-		<-c.Stop
+		<-c.Finish
 		c.GoodServer.Close()
 		if !c.BadIsClose {
 			c.BadServer.Close()
 		}
 		mesh.Close()
+		c.Finish <- true
 	}()
 	time.Sleep(5 * time.Second) //wait server and mesh start
+}
+
+type PathHTTPHandler struct{}
+
+func (h *PathHTTPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/plain")
+	if strings.Trim(r.URL.Path, "/") != HTTPTestPath {
+		w.WriteHeader(http.StatusInternalServerError)
+	}
+	fmt.Fprintf(w, "\nRequestId:%s\n", r.Header.Get("Requestid"))
 }
 
 // BadServer Handler
@@ -104,23 +117,20 @@ type BadHTTPHandler struct{}
 
 func (h *BadHTTPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/plain")
-	for k := range r.Header {
-		w.Header().Set(k, r.Header.Get(k))
-	}
 	w.WriteHeader(http.StatusInternalServerError)
 	fmt.Fprintf(w, "\nRequestId:%s\n", r.Header.Get("Requestid"))
 }
 
 func ServeBadBoltV1(t *testing.T, conn net.Conn) {
 	response := func(iobuf types.IoBuffer) ([]byte, bool) {
-		cmd, _ := codec.BoltV1.GetDecoder().Decode(nil, iobuf)
+		cmd, _ := codec.BoltCodec.Decode(nil, iobuf)
 		if cmd == nil {
 			return nil, false
 		}
-		if req, ok := cmd.(*sofarpc.BoltRequestCommand); ok {
+		if req, ok := cmd.(*sofarpc.BoltRequest); ok {
 			resp := util.BuildBoltV1Response(req)
 			resp.ResponseStatus = sofarpc.RESPONSE_STATUS_SERVER_EXCEPTION
-			iobufresp, err := codec.BoltV1.GetEncoder().EncodeHeaders(nil, resp)
+			iobufresp, err := codec.BoltCodec.Encode(nil, resp)
 			if err != nil {
 				t.Errorf("Build response error: %v\n", err)
 				return nil, true
@@ -149,6 +159,7 @@ func TestRetry(t *testing.T) {
 		// A server is shutdown
 		NewRetryCase(t, protocol.HTTP1, protocol.HTTP1, true),
 		NewRetryCase(t, protocol.HTTP1, protocol.HTTP2, true),
+		NewRetryCase(t, protocol.HTTP2, protocol.HTTP2, true),
 		// HTTP2 and SofaRPC will create connection to upstream before send request to upstream
 		// If upstream is closed, it will failed directly, and we cannot do a retry before we send a request to upstream
 		/*
@@ -172,8 +183,7 @@ func TestRetry(t *testing.T) {
 		case <-time.After(15 * time.Second):
 			t.Errorf("[ERROR MESSAGE] #%d %v to mesh %v hang\n", i, tc.AppProtocol, tc.MeshProtocol)
 		}
-		close(tc.Stop)
-		time.Sleep(time.Second)
+		tc.FinishCase()
 	}
 }
 
@@ -186,25 +196,23 @@ func TestRetryProxy(t *testing.T) {
 		NewRetryCase(t, protocol.HTTP1, protocol.HTTP1, false),
 		NewRetryCase(t, protocol.HTTP2, protocol.HTTP2, false),
 		NewRetryCase(t, protocol.SofaRPC, protocol.SofaRPC, false),
-		NewRetryCase(t, protocol.HTTP1, protocol.HTTP1, true),
+		//NewRetryCase(t, protocol.HTTP1, protocol.HTTP1, true),
 		//NewRetryCase(t, protocol.HTTP2, protocol.HTTP2, true),
 		//NewRetryCase(t, protocol.SofaRPC, protocol.SofaRPC, true),
 	}
 	for i, tc := range testCases {
 		t.Logf("start case #%d\n", i)
 		tc.StartProxy()
-		// at least run twice
-		go tc.RunCase(2, 0)
+		go tc.RunCase(10, 0)
 		select {
 		case err := <-tc.C:
 			if err != nil {
 				t.Errorf("[ERROR MESSAGE] #%d %v to mesh %v test failed, error: %v\n", i, tc.AppProtocol, tc.MeshProtocol, err)
 			}
-		case <-time.After(15 * time.Second):
+		case <-time.After(30 * time.Second):
 			t.Errorf("[ERROR MESSAGE] #%d %v to mesh %v hang\n", i, tc.AppProtocol, tc.MeshProtocol)
 		}
-		close(tc.Stop)
-		time.Sleep(time.Second)
+		tc.FinishCase()
 
 	}
 }

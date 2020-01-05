@@ -20,13 +20,21 @@ package protocol
 import (
 	"context"
 
-	"github.com/alipay/sofa-mosn/pkg/buffer"
-	"github.com/alipay/sofa-mosn/pkg/types"
+	"mosn.io/mosn/pkg/buffer"
+	"mosn.io/mosn/pkg/types"
 )
 
-var defaultMapSize = 1 << 3
-var defaultDataSize = 1 << 10
-var defaultHeaderSize = 1 << 5
+func init() {
+	buffer.RegisterBuffer(&ins)
+}
+
+var (
+	ins = protocolBufferCtx{}
+
+	defaultMapSize    = 1 << 3
+	defaultDataSize   = 1 << 10
+	defaultHeaderSize = 1 << 5
+)
 
 type ProtocolBuffers struct {
 	reqData     types.IoBuffer
@@ -40,10 +48,8 @@ type ProtocolBuffers struct {
 	rspTrailers map[string]string
 }
 
-type protocolBufferCtx struct{}
-
-func (ctx protocolBufferCtx) Name() int {
-	return buffer.Protocol
+type protocolBufferCtx struct {
+	buffer.TempBufferCtx
 }
 
 func (ctx protocolBufferCtx) New() interface{} {
@@ -137,5 +143,5 @@ func (p *ProtocolBuffers) GetRspTailers() map[string]string {
 // ProtocolBuffersByContext returns ProtocolBuffers by context
 func ProtocolBuffersByContext(ctx context.Context) *ProtocolBuffers {
 	poolCtx := buffer.PoolContext(ctx)
-	return poolCtx.Find(protocolBufferCtx{}, nil).(*ProtocolBuffers)
+	return poolCtx.Find(&ins, nil).(*ProtocolBuffers)
 }

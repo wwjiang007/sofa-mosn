@@ -22,11 +22,40 @@ import (
 	"io"
 	"path/filepath"
 	"strconv"
+	"strings"
 
 	"gopkg.in/natefinch/lumberjack.v2"
 )
 
-// Roller implements a type that provides a rolling logger.
+var (
+	// defaultRoller is roller by one day
+	defaultRoller = Roller{MaxTime: defaultRotateTime}
+
+	// lumberjacks maps log filenames to the logger
+	// that is being used to keep them rolled/maintained.
+	lumberjacks = make(map[string]*lumberjack.Logger)
+
+	errInvalidRollerParameter = errors.New("invalid roller parameter")
+)
+
+const (
+	// defaultRotateTime is 24 hours
+	defaultRotateTime = 24 * 60 * 60
+	// defaultRotateSize is 100 MB.
+	defaultRotateSize = 1000
+	// defaultRotateAge is 7 days.
+	defaultRotateAge = 7
+	// defaultRotateKeep is 10 files.
+	defaultRotateKeep = 10
+
+	directiveRotateTime     = "time"
+	directiveRotateSize     = "size"
+	directiveRotateAge      = "age"
+	directiveRotateKeep     = "keep"
+	directiveRotateCompress = "compress"
+)
+
+// roller implements a type that provides a rolling logger.
 type Roller struct {
 	Filename   string
 	MaxSize    int
@@ -34,6 +63,7 @@ type Roller struct {
 	MaxBackups int
 	Compress   bool
 	LocalTime  bool
+	MaxTime    int64
 }
 
 // GetLogWriter returns an io.Writer that writes to a rolling logger.
@@ -61,53 +91,17 @@ func (l Roller) GetLogWriter() io.Writer {
 		}
 		lumberjacks[absPath] = lj
 	}
+
 	return lj
 }
 
-// IsLogRollerSubdirective is true if the subdirective is for the log roller.
-func IsLogRollerSubdirective(subdir string) bool {
-	return subdir == directiveRotateSize ||
-		subdir == directiveRotateAge ||
-		subdir == directiveRotateKeep ||
-		subdir == directiveRotateCompress
-}
-
-var errInvalidRollerParameter = errors.New("invalid roller parameter")
-
-// ParseRoller parses roller contents out of c.
-func ParseRoller(l *Roller, what string, where ...string) error {
-	if l == nil {
-		l = DefaultRoller()
+// InitDefaultRoller
+func InitGlobalRoller(roller string) error {
+	r, err := ParseRoller(roller)
+	if err != nil {
+		return err
 	}
-
-	// rotate_compress doesn't accept any parameters.
-	// others only accept one parameter
-	if (what == directiveRotateCompress && len(where) != 0) ||
-		(what != directiveRotateCompress && len(where) != 1) {
-		return errInvalidRollerParameter
-	}
-
-	var (
-		value int
-		err   error
-	)
-	if what != directiveRotateCompress {
-		value, err = strconv.Atoi(where[0])
-		if err != nil {
-			return err
-		}
-	}
-
-	switch what {
-	case directiveRotateSize:
-		l.MaxSize = value
-	case directiveRotateAge:
-		l.MaxAge = value
-	case directiveRotateKeep:
-		l.MaxBackups = value
-	case directiveRotateCompress:
-		l.Compress = true
-	}
+	defaultRoller = *r
 	return nil
 }
 
@@ -122,20 +116,65 @@ func DefaultRoller() *Roller {
 	}
 }
 
-const (
-	// defaultRotateSize is 100 MB.
-	defaultRotateSize = 100
-	// defaultRotateAge is 14 days.
-	defaultRotateAge = 14
-	// defaultRotateKeep is 10 files.
-	defaultRotateKeep = 10
+// ParseRoller parses roller contents out of c.
+func ParseRoller(what string) (*Roller, error) {
+	var err error
+	var value int
+	roller := DefaultRoller()
+	for _, args := range strings.Split(what, " ") {
+		v := strings.Split(args, "=")
+		if len(v) != 2 {
+			err = errInvalidRollerParameter
+			break
+		}
+		switch v[0] {
+		case directiveRotateTime:
+			value, err = strconv.Atoi(v[1])
+			if err != nil {
+				break
+			}
+			roller.MaxTime = int64(value) * 60 * 60
+		case directiveRotateSize:
+			value, err = strconv.Atoi(v[1])
+			if err != nil {
+				break
+			}
+			roller.MaxSize = value
+		case directiveRotateAge:
+			value, err = strconv.Atoi(v[1])
+			if err != nil {
+				break
+			}
+			roller.MaxAge = value
+		case directiveRotateKeep:
+			value, err = strconv.Atoi(v[1])
+			if err != nil {
+				break
+			}
+			roller.MaxBackups = value
+		case directiveRotateCompress:
+			if v[1] == "on" {
+				roller.Compress = true
+			} else if v[1] == "off" {
+				roller.Compress = false
+			} else {
+				err = errInvalidRollerParameter
+			}
+		default:
+			err = errInvalidRollerParameter
+		}
+	}
+	if err != nil {
+		return nil, err
+	}
 
-	directiveRotateSize     = "rotate_size"
-	directiveRotateAge      = "rotate_age"
-	directiveRotateKeep     = "rotate_keep"
-	directiveRotateCompress = "rotate_compress"
-)
+	return roller, nil
+}
 
-// lumberjacks maps log filenames to the logger
-// that is being used to keep them rolled/maintained.
-var lumberjacks = make(map[string]*lumberjack.Logger)
+// IsLogRollerSubdirective is true if the subdirective is for the log roller.
+func IsLogRollerSubdirective(subdir string) bool {
+	return subdir == directiveRotateSize ||
+		subdir == directiveRotateAge ||
+		subdir == directiveRotateKeep ||
+		subdir == directiveRotateCompress
+}

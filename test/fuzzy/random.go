@@ -5,9 +5,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/alipay/sofa-mosn/pkg/mosn"
-	"github.com/alipay/sofa-mosn/pkg/types"
-	"github.com/alipay/sofa-mosn/test/util"
+	"mosn.io/mosn/pkg/mosn"
+	_ "mosn.io/mosn/pkg/protocol/http/conv"
+	_ "mosn.io/mosn/pkg/protocol/http2/conv"
+	_ "mosn.io/mosn/pkg/protocol/rpc/sofarpc/conv"
+	"mosn.io/mosn/pkg/types"
+	"mosn.io/mosn/test/util"
 )
 
 type Server interface {

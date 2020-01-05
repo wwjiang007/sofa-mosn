@@ -21,102 +21,210 @@ import (
 	"context"
 	"sync"
 	"sync/atomic"
+	"time"
 
-	"github.com/alipay/sofa-mosn/pkg/protocol"
-	"github.com/alipay/sofa-mosn/pkg/proxy"
-	str "github.com/alipay/sofa-mosn/pkg/stream"
-	"github.com/alipay/sofa-mosn/pkg/types"
-	metrics "github.com/rcrowley/go-metrics"
+	mosnctx "mosn.io/mosn/pkg/context"
+	"mosn.io/mosn/pkg/log"
+	"mosn.io/mosn/pkg/network"
+	"mosn.io/mosn/pkg/protocol"
+	str "mosn.io/mosn/pkg/stream"
+	"mosn.io/mosn/pkg/types"
+	"mosn.io/mosn/pkg/utils"
+)
+
+const (
+	Init = iota
+	Connecting
+	Connected
 )
 
 func init() {
-	proxy.RegisterNewPoolFactory(protocol.SofaRPC, NewConnPool)
+	network.RegisterNewPoolFactory(protocol.SofaRPC, NewConnPool)
 	types.RegisterConnPoolFactory(protocol.SofaRPC, true)
-
 }
+
+var defaultSubProtocol byte = 0x00
 
 // types.ConnectionPool
 // activeClient used as connected client
 // host is the upstream
 type connPool struct {
-	activeClient *activeClient
-	host         types.Host
+	activeClients sync.Map //sub protocol -> activeClient
+	host          types.Host
 
 	mux sync.Mutex
 }
 
 // NewConnPool
 func NewConnPool(host types.Host) types.ConnectionPool {
-	return &connPool{
+	p := &connPool{
 		host: host,
 	}
+	return p
+}
+
+func (p *connPool) SupportTLS() bool {
+	return p.host.SupportTLS()
+}
+
+func (p *connPool) init(client *activeClient, sub byte) {
+	utils.GoWithRecover(func() {
+		if log.DefaultLogger.GetLogLevel() >= log.DEBUG {
+			log.DefaultLogger.Debugf("[stream] [sofarpc] [connpool] init host %s", p.host.AddressString())
+		}
+
+		p.mux.Lock()
+		defer p.mux.Unlock()
+		client := newActiveClient(context.Background(), sub, p)
+		if client != nil {
+			client.state = Connected
+			p.activeClients.Store(sub, client)
+		} else {
+			p.activeClients.Delete(sub)
+		}
+	}, nil)
+}
+
+func (p *connPool) CheckAndInit(ctx context.Context) bool {
+	var client *activeClient
+
+	subProtocol := getSubProtocol(ctx)
+
+	v, ok := p.activeClients.Load(subProtocol)
+	if !ok {
+		fakeclient := &activeClient{}
+		fakeclient.state = Init
+		v, _ := p.activeClients.LoadOrStore(subProtocol, fakeclient)
+		client = v.(*activeClient)
+	} else {
+		client = v.(*activeClient)
+	}
+
+	if atomic.LoadUint32(&client.state) == Connected {
+		return true
+	}
+
+	if atomic.CompareAndSwapUint32(&client.state, Init, Connecting) {
+		p.init(client, subProtocol)
+	}
+
+	return false
 }
 
 func (p *connPool) Protocol() types.Protocol {
 	return protocol.SofaRPC
 }
 
-func (p *connPool) NewStream(context context.Context, streamID string,
-	responseDecoder types.StreamReceiver, cb types.PoolEventListener) types.Cancellable {
-	p.mux.Lock()
-	if p.activeClient == nil {
-		p.activeClient = newActiveClient(context, p)
+func (p *connPool) NewStream(ctx context.Context,
+	responseDecoder types.StreamReceiveListener, listener types.PoolEventListener) {
+	subProtocol := getSubProtocol(ctx)
+
+	client, _ := p.activeClients.Load(subProtocol)
+
+	if client == nil {
+		listener.OnFailure(types.ConnectionFailure, p.host)
+		return
 	}
 
-	p.mux.Unlock()
-
-	activeClient := p.activeClient
-	if activeClient == nil {
-		cb.OnFailure(streamID, types.ConnectionFailure, nil)
-		return nil
+	activeClient := client.(*activeClient)
+	if atomic.LoadUint32(&activeClient.state) != Connected {
+		listener.OnFailure(types.ConnectionFailure, p.host)
+		return
 	}
 
 	if !p.host.ClusterInfo().ResourceManager().Requests().CanCreate() {
-		cb.OnFailure(streamID, types.Overflow, nil)
+		listener.OnFailure(types.Overflow, p.host)
 		p.host.HostStats().UpstreamRequestPendingOverflow.Inc(1)
 		p.host.ClusterInfo().Stats().UpstreamRequestPendingOverflow.Inc(1)
 	} else {
 		atomic.AddUint64(&activeClient.totalStream, 1)
 		p.host.HostStats().UpstreamRequestTotal.Inc(1)
-		p.host.HostStats().UpstreamRequestActive.Inc(1)
 		p.host.ClusterInfo().Stats().UpstreamRequestTotal.Inc(1)
-		p.host.ClusterInfo().Stats().UpstreamRequestActive.Inc(1)
-		p.host.ClusterInfo().ResourceManager().Requests().Increase()
-		streamEncoder := activeClient.codecClient.NewStream(context, streamID, responseDecoder)
-		cb.OnReady(streamID, streamEncoder, p.host)
+
+		var streamEncoder types.StreamSender
+		// oneway
+		if responseDecoder == nil {
+			streamEncoder = activeClient.client.NewStream(ctx, nil)
+		} else {
+			streamEncoder = activeClient.client.NewStream(ctx, responseDecoder)
+			streamEncoder.GetStream().AddEventListener(activeClient)
+
+			p.host.HostStats().UpstreamRequestActive.Inc(1)
+			p.host.ClusterInfo().Stats().UpstreamRequestActive.Inc(1)
+			p.host.ClusterInfo().ResourceManager().Requests().Increase()
+		}
+
+		listener.OnReady(streamEncoder, p.host)
 	}
 
-	return nil
+	return
 }
 
 func (p *connPool) Close() {
-	if p.activeClient != nil {
-		p.activeClient.codecClient.Close()
+	f := func(k, v interface{}) bool {
+		ac, _ := v.(*activeClient)
+		if ac.client != nil {
+			ac.client.Close()
+		}
+		return true
 	}
+
+	p.activeClients.Range(f)
+}
+
+// Shutdown stop the keepalive, so the connection will be idle after requests finished
+func (p *connPool) Shutdown() {
+	f := func(k, v interface{}) bool {
+		ac, _ := v.(*activeClient)
+		if ac.keepAlive != nil {
+			ac.keepAlive.keepAlive.Stop()
+		}
+		return true
+	}
+	p.activeClients.Range(f)
 }
 
 func (p *connPool) onConnectionEvent(client *activeClient, event types.ConnectionEvent) {
 	// event.ConnectFailure() contains types.ConnectTimeout and types.ConnectTimeout
 	if event.IsClose() {
-		if client.closeWithActiveReq {
-			if event == types.LocalClose {
+		p.host.HostStats().UpstreamConnectionClose.Inc(1)
+		p.host.HostStats().UpstreamConnectionActive.Dec(1)
+
+		p.host.ClusterInfo().Stats().UpstreamConnectionClose.Inc(1)
+		p.host.ClusterInfo().Stats().UpstreamConnectionActive.Dec(1)
+
+		switch event {
+		case types.LocalClose:
+			p.host.HostStats().UpstreamConnectionLocalClose.Inc(1)
+			p.host.ClusterInfo().Stats().UpstreamConnectionLocalClose.Inc(1)
+
+			if client.closeWithActiveReq {
 				p.host.HostStats().UpstreamConnectionLocalCloseWithActiveRequest.Inc(1)
 				p.host.ClusterInfo().Stats().UpstreamConnectionLocalCloseWithActiveRequest.Inc(1)
-			} else if event == types.RemoteClose {
+			}
+
+		case types.RemoteClose:
+			p.host.HostStats().UpstreamConnectionRemoteClose.Inc(1)
+			p.host.ClusterInfo().Stats().UpstreamConnectionRemoteClose.Inc(1)
+
+			if client.closeWithActiveReq {
 				p.host.HostStats().UpstreamConnectionRemoteCloseWithActiveRequest.Inc(1)
 				p.host.ClusterInfo().Stats().UpstreamConnectionRemoteCloseWithActiveRequest.Inc(1)
+
 			}
+		default:
+			// do nothing
 		}
-		p.activeClient = nil
+		p.mux.Lock()
+		p.activeClients.Delete(client.subProtocol)
+		p.mux.Unlock()
 	} else if event == types.ConnectTimeout {
 		p.host.HostStats().UpstreamRequestTimeout.Inc(1)
 		p.host.ClusterInfo().Stats().UpstreamRequestTimeout.Inc(1)
-		client.codecClient.Close()
-		p.activeClient = nil
+		client.client.Close()
 	} else if event == types.ConnectFailed {
 		p.host.HostStats().UpstreamConnectionConFail.Inc(1)
 		p.host.ClusterInfo().Stats().UpstreamConnectionConFail.Inc(1)
-		p.activeClient = nil
 	}
 }
 
@@ -140,50 +248,76 @@ func (p *connPool) onStreamReset(client *activeClient, reason types.StreamResetR
 	}
 }
 
-func (p *connPool) createCodecClient(context context.Context, connData types.CreateConnectionData) str.CodecClient {
-	return str.NewCodecClient(context, protocol.SofaRPC, connData.Connection, connData.HostInfo)
+func (p *connPool) createStreamClient(context context.Context, connData types.CreateConnectionData) str.Client {
+	return str.NewStreamClient(context, protocol.SofaRPC, connData.Connection, connData.HostInfo)
 }
 
-// stream.CodecClientCallbacks
+// keepAliveListener is a types.ConnectionEventListener
+type keepAliveListener struct {
+	keepAlive types.KeepAlive
+}
+
+func (l *keepAliveListener) OnEvent(event types.ConnectionEvent) {
+	if event == types.OnReadTimeout {
+		l.keepAlive.SendKeepAlive()
+	}
+}
+
+// types.StreamEventListener
 // types.ConnectionEventListener
 // types.StreamConnectionEventListener
 type activeClient struct {
+	subProtocol        byte
 	pool               *connPool
-	codecClient        str.CodecClient
+	keepAlive          *keepAliveListener
+	client             str.Client
 	host               types.CreateConnectionData
 	closeWithActiveReq bool
 	totalStream        uint64
+	state              uint32
 }
 
-func newActiveClient(context context.Context, pool *connPool) *activeClient {
+func newActiveClient(ctx context.Context, subProtocol byte, pool *connPool) *activeClient {
 	ac := &activeClient{
-		pool: pool,
+		subProtocol: subProtocol,
+		pool:        pool,
 	}
 
-	data := pool.host.CreateConnection(context)
-	codecClient := pool.createCodecClient(context, data)
-	codecClient.AddConnectionCallbacks(ac)
-	codecClient.SetCodecClientCallbacks(ac)
-	codecClient.SetCodecConnectionCallbacks(ac)
+	data := pool.host.CreateConnection(ctx)
+	connCtx := mosnctx.WithValue(ctx, types.ContextKeyConnectionID, data.Connection.ID())
+	codecClient := pool.createStreamClient(connCtx, data)
+	codecClient.AddConnectionEventListener(ac)
+	codecClient.SetStreamConnectionEventListener(ac)
 
-	ac.codecClient = codecClient
+	ac.client = codecClient
 	ac.host = data
 
-	if err := ac.host.Connection.Connect(true); err != nil {
+	// Add Keep Alive
+	// protocol is from onNewDetectStream
+	// TODO: support protocol convert
+
+	// TODO: support config
+	if subProtocol != defaultSubProtocol {
+		rpcKeepAlive := NewSofaRPCKeepAlive(codecClient, subProtocol, time.Second, 6)
+		rpcKeepAlive.StartIdleTimeout()
+		ac.keepAlive = &keepAliveListener{
+			keepAlive: rpcKeepAlive,
+		}
+		ac.client.AddConnectionEventListener(ac.keepAlive)
+	}
+
+	if err := ac.client.Connect(); err != nil {
 		return nil
 	}
+
+	// stats
 	pool.host.HostStats().UpstreamConnectionTotal.Inc(1)
 	pool.host.HostStats().UpstreamConnectionActive.Inc(1)
 	pool.host.ClusterInfo().Stats().UpstreamConnectionTotal.Inc(1)
 	pool.host.ClusterInfo().Stats().UpstreamConnectionActive.Inc(1)
 
-	// bytes total adds all connections data together, but buffered data not
-	codecClient.SetConnectionStats(&types.ConnectionStats{
-		ReadTotal:     pool.host.ClusterInfo().Stats().UpstreamBytesReadTotal,
-		ReadBuffered:  metrics.NewGauge(),
-		WriteTotal:    pool.host.ClusterInfo().Stats().UpstreamBytesWriteTotal,
-		WriteBuffered: metrics.NewGauge(),
-	})
+	// bytes total adds all connections data together
+	codecClient.SetConnectionCollector(pool.host.ClusterInfo().Stats().UpstreamBytesReadTotal, pool.host.ClusterInfo().Stats().UpstreamBytesWriteTotal)
 
 	return ac
 }
@@ -192,12 +326,25 @@ func (ac *activeClient) OnEvent(event types.ConnectionEvent) {
 	ac.pool.onConnectionEvent(ac, event)
 }
 
-func (ac *activeClient) OnStreamDestroy() {
+// types.StreamEventListener
+func (ac *activeClient) OnDestroyStream() {
 	ac.pool.onStreamDestroy(ac)
 }
 
-func (ac *activeClient) OnStreamReset(reason types.StreamResetReason) {
+func (ac *activeClient) OnResetStream(reason types.StreamResetReason) {
 	ac.pool.onStreamReset(ac, reason)
 }
 
+// types.StreamConnectionEventListener
 func (ac *activeClient) OnGoAway() {}
+
+func getSubProtocol(ctx context.Context) byte {
+	if ctx != nil {
+		if val := mosnctx.Get(ctx, types.ContextSubProtocol); val != nil {
+			if code, ok := val.(byte); ok {
+				return code
+			}
+		}
+	}
+	return defaultSubProtocol
+}

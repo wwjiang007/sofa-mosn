@@ -20,14 +20,18 @@ package proxy
 import (
 	"context"
 
-	"github.com/alipay/sofa-mosn/pkg/buffer"
-	"github.com/alipay/sofa-mosn/pkg/network"
+	"mosn.io/mosn/pkg/buffer"
+	"mosn.io/mosn/pkg/network"
 )
 
-type proxyBufferCtx struct{}
+func init() {
+	buffer.RegisterBuffer(&ins)
+}
 
-func (ctx proxyBufferCtx) Name() int {
-	return buffer.Proxy
+var ins = proxyBufferCtx{}
+
+type proxyBufferCtx struct {
+	buffer.TempBufferCtx
 }
 
 func (ctx proxyBufferCtx) New() interface{} {
@@ -47,5 +51,5 @@ type proxyBuffers struct {
 
 func proxyBuffersByContext(ctx context.Context) *proxyBuffers {
 	poolCtx := buffer.PoolContext(ctx)
-	return poolCtx.Find(proxyBufferCtx{}, nil).(*proxyBuffers)
+	return poolCtx.Find(&ins, nil).(*proxyBuffers)
 }

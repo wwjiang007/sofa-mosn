@@ -21,7 +21,7 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/alipay/sofa-mosn/pkg/api/v2"
+	"mosn.io/mosn/pkg/api/v2"
 )
 
 func Test_getWeightedClusterEntryAndVerify(t *testing.T) {
@@ -229,4 +229,31 @@ func Test_getHeadersToRemove(t *testing.T) {
 			}
 		})
 	}
+}
+
+func Test_GetRouterHeaders_regex(t *testing.T) {
+	headersConfig := []v2.HeaderMatcher{
+		{
+			Name:  "regexkey",
+			Value: ".*",
+			Regex: true,
+		},
+		{
+			Name:  "invalid_regex",
+			Value: "a)",
+			Regex: true,
+		},
+	}
+	headerDatas := GetRouterHeaders(headersConfig)
+	if len(headerDatas) != 1 {
+		t.Errorf("getRouterHeaders unexpected, got %d header data, but want 1", len(headerDatas))
+	}
+	// test regex match
+	value := "any value"
+	for _, hd := range headerDatas {
+		if !hd.RegexPattern.MatchString(value) {
+			t.Error("header regex match failed")
+		}
+	}
+
 }

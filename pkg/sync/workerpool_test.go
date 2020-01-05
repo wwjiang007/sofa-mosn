@@ -23,8 +23,9 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/alipay/sofa-mosn/pkg/log"
 	"time"
+
+	"mosn.io/mosn/pkg/log"
 )
 
 type TestJob struct {
@@ -77,17 +78,12 @@ func TestJobOrder(t *testing.T) {
 		counter := uint32(i)
 		go func() {
 			for j := 0; j < shardEvents; j++ {
-				pool.Offer(&TestJob{i: atomic.AddUint32(&counter, uint32(shardsNum))})
+				pool.Offer(&TestJob{i: atomic.AddUint32(&counter, uint32(shardsNum))}, true)
 			}
 		}()
 	}
 
 	wg.Wait()
-
-	// wait flush end for codecov
-	for atomic.LoadUint32(&pool.(*shardWorkerPool).schedule) != 0 {
-		time.Sleep(time.Millisecond * 10)
-	}
 }
 
 func eventProcess(b *testing.B) {
@@ -130,7 +126,7 @@ func eventProcess(b *testing.B) {
 		counter := uint32(i)
 		go func() {
 			for j := 0; j < shardEvents; j++ {
-				pool.Offer(&TestJob{i: atomic.AddUint32(&counter, uint32(shardsNum))})
+				pool.Offer(&TestJob{i: atomic.AddUint32(&counter, uint32(shardsNum))}, true)
 			}
 		}()
 	}
@@ -239,5 +235,40 @@ func BenchmarkUnboundChannel(b *testing.B) {
 
 	for i := 0; i < b.N; i++ {
 		eventProcessWithUnboundedChannel(b)
+	}
+}
+
+func TestScheduleAuto(t *testing.T) {
+	size := 5
+	pool := NewWorkerPool(size)
+	p := pool.(*workerPool)
+	for i := 0; i < 3; i++ {
+		pool.ScheduleAuto(func() {
+			time.Sleep(time.Millisecond)
+		})
+		time.Sleep(10 * time.Millisecond)
+	}
+	if len(p.sem) != 1 {
+		t.Errorf("Test ScheduleAuto() error, should be 1, but get %d", len(p.sem))
+	}
+
+	for i := 0; i < 3; i++ {
+		pool.ScheduleAuto(func() {
+			time.Sleep(time.Millisecond)
+		})
+	}
+	time.Sleep(10 * time.Millisecond)
+	if len(p.sem) != 3 {
+		t.Errorf("Test ScheduleAuto() error, should be 3, but get %d", len(p.sem))
+	}
+
+	for i := 0; i < 10; i++ {
+		pool.ScheduleAuto(func() {
+			time.Sleep(time.Millisecond)
+		})
+	}
+	time.Sleep(10 * time.Millisecond)
+	if len(p.sem) != size {
+		t.Errorf("Test ScheduleAuto() error, should be %d, but get %d", size, len(p.sem))
 	}
 }

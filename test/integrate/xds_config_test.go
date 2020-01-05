@@ -24,13 +24,26 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/alipay/sofa-mosn/pkg/admin"
-	"github.com/alipay/sofa-mosn/pkg/api/v2"
-	"github.com/alipay/sofa-mosn/pkg/config"
-	"github.com/alipay/sofa-mosn/pkg/mosn"
+	"github.com/envoyproxy/go-control-plane/pkg/util"
+
+	"github.com/envoyproxy/go-control-plane/envoy/api/v2/auth"
+	"github.com/envoyproxy/go-control-plane/envoy/api/v2/core"
+	"github.com/gogo/protobuf/types"
+
 	xdsapi "github.com/envoyproxy/go-control-plane/envoy/api/v2"
+	xdslistener "github.com/envoyproxy/go-control-plane/envoy/api/v2/listener"
+	"github.com/envoyproxy/go-control-plane/envoy/api/v2/route"
+	http_conn "github.com/envoyproxy/go-control-plane/envoy/config/filter/network/http_connection_manager/v2"
 	"github.com/gogo/protobuf/proto"
-	"github.com/json-iterator/go"
+	jsoniter "github.com/json-iterator/go"
+	admin "mosn.io/mosn/pkg/admin/store"
+	v2 "mosn.io/mosn/pkg/api/v2"
+	"mosn.io/mosn/pkg/config"
+	_ "mosn.io/mosn/pkg/filter/stream/faultinject"
+	_ "mosn.io/mosn/pkg/filter/stream/healthcheck/sofarpc"
+	_ "mosn.io/mosn/pkg/filter/stream/mixer"
+	"mosn.io/mosn/pkg/mosn"
+	"mosn.io/mosn/pkg/xds/conv"
 )
 
 var json = jsoniter.ConfigCompatibleWithStandardLibrary
@@ -86,15 +99,15 @@ func handleXdsData(mosnConfig *config.MOSNConfig, xdsFiles []string) error {
 		case "type.googleapis.com/envoy.api.v2.Listener":
 			listeners := handleListenersResp(msg)
 			fmt.Printf("get %d listeners from LDS\n", len(listeners))
-			mosnConfig.OnAddOrUpdateListeners(listeners)
+			conv.ConvertAddOrUpdateListeners(listeners)
 		case "type.googleapis.com/envoy.api.v2.ClusterLoadAssignment":
 			endpoints := handleEndpointsResp(msg)
 			fmt.Printf("get %d endpoints from EDS\n", len(endpoints))
-			mosnConfig.OnUpdateEndpoints(endpoints)
+			conv.ConvertUpdateEndpoints(endpoints)
 		case "type.googleapis.com/envoy.api.v2.Cluster":
 			clusters := handleClustersResp(msg)
 			fmt.Printf("get %d clusters from CDS\n", len(clusters))
-			mosnConfig.OnUpdateClusters(clusters)
+			conv.ConvertUpdateClusters(clusters)
 		default:
 			return errors.New(fmt.Sprintf("unkown type: %s", msg.TypeUrl))
 		}
@@ -126,12 +139,7 @@ func TestConfigAddAndUpdate(t *testing.T) {
 		t.Fatalf("should not have clusters")
 	}
 
-	xdsFiles := []string{
-		"listener1.input",
-		"cluster1.input",
-		"clusterloadassignment1.input",
-	}
-	handleXdsData(mosnConfig, xdsFiles)
+	loadXdsData()
 
 	buf, err = admin.Dump()
 	if err != nil {
@@ -142,8 +150,8 @@ func TestConfigAddAndUpdate(t *testing.T) {
 	if m.MOSNConfig == nil {
 		t.Fatalf("mosn_config missing")
 	}
-	if len(m.Listener) != 35 {
-		t.Fatalf("should have 35 listeners, but got %d", len(m.Listener))
+	if len(m.Listener) != 1 {
+		t.Fatalf("should have 1 listeners, but got %d", len(m.Listener))
 	}
 
 	if listener, ok := m.Listener["0.0.0.0_9080"]; !ok {
@@ -180,8 +188,8 @@ func TestConfigAddAndUpdate(t *testing.T) {
 		}
 	}
 
-	if len(m.Cluster) != 58 {
-		t.Fatalf("should have 58 clusters, but got %d", len(m.Cluster))
+	if len(m.Cluster) != 1 {
+		t.Fatalf("should have 1 clusters, but got %d", len(m.Cluster))
 	}
 
 	if cluster, ok := m.Cluster["outbound|9080||productpage.default.svc.cluster.local"]; !ok {
@@ -197,23 +205,7 @@ func TestConfigAddAndUpdate(t *testing.T) {
 		}
 	}
 
-	xdsFiles = []string{
-		"listener1.input",
-		"cluster1.input",
-		"clusterloadassignment1.input",
-		"listener2.input",
-		"clusterloadassignment2.input",
-		"cluster2.input",
-		"clusterloadassignment3.input",
-		"listener3.input",
-		"cluster3.input",
-		"clusterloadassignment4.input",
-		"listener4.input",
-		"cluster4.input",
-		"clusterloadassignment5.input",
-		"listener5.input",
-	}
-	handleXdsData(mosnConfig, xdsFiles)
+	loadXdsData2()
 
 	buf, err = admin.Dump()
 	if err != nil {
@@ -224,8 +216,8 @@ func TestConfigAddAndUpdate(t *testing.T) {
 	if m.MOSNConfig == nil {
 		t.Fatalf("mosn_config missing")
 	}
-	if len(m.Listener) != 35 {
-		t.Fatalf("should have 35 listeners, but got %d", len(m.Listener))
+	if len(m.Listener) != 1 {
+		t.Fatalf("should have 1 listeners, but got %d", len(m.Listener))
 	}
 
 	if listener, ok := m.Listener["0.0.0.0_9080"]; !ok {
@@ -252,7 +244,11 @@ func TestConfigAddAndUpdate(t *testing.T) {
 			route := router["route"].(map[string]interface{})
 			weightedClusters := route["weighted_clusters"].([]interface{})
 
-			if route["cluster_name"].(string) != "" && len(weightedClusters) != 2 {
+			// cluster_name is omitempty
+			if _, ok := route["cluster_name"]; ok {
+				t.Fatal("cluster_name is not omitempty")
+			}
+			if len(weightedClusters) != 2 {
 				t.Fatalf("reviews.default.svc.cluster.local:9080 should route to weighted_clusters")
 			}
 			cluster1 := weightedClusters[0].(map[string]interface{})["cluster"].(map[string]interface{})
@@ -272,8 +268,8 @@ func TestConfigAddAndUpdate(t *testing.T) {
 		}
 	}
 
-	if len(m.Cluster) != 58 {
-		t.Fatalf("should have 58 clusters, but got %d", len(m.Cluster))
+	if len(m.Cluster) != 1 {
+		t.Fatalf("should have 1 clusters, but got %d", len(m.Cluster))
 	}
 
 	if cluster, ok := m.Cluster["outbound|9080||productpage.default.svc.cluster.local"]; !ok {
@@ -291,4 +287,182 @@ func TestConfigAddAndUpdate(t *testing.T) {
 
 	Mosn.Close()
 	admin.Reset()
+}
+
+func loadXdsData2() {
+	// Listeners
+	listener := &xdsapi.Listener{
+		Name: "0.0.0.0_9080",
+		Address: core.Address{
+			Address: &core.Address_SocketAddress{
+				SocketAddress: &core.SocketAddress{
+					Address: "0.0.0.0",
+					PortSpecifier: &core.SocketAddress_PortValue{
+						PortValue: 9080,
+					},
+				},
+			},
+		},
+		UseOriginalDst: &types.BoolValue{Value: false},
+		DeprecatedV1: &xdsapi.Listener_DeprecatedV1{
+			BindToPort: &types.BoolValue{Value: false},
+		},
+		FilterChains: []xdslistener.FilterChain{
+			xdslistener.FilterChain{
+				FilterChainMatch: nil,
+				TlsContext:       &auth.DownstreamTlsContext{},
+				Filters: []xdslistener.Filter{
+					xdslistener.Filter{
+						Name: "envoy.http_connection_manager",
+						ConfigType: &xdslistener.Filter_Config{
+							Config: MessageToStruct(&http_conn.HttpConnectionManager{
+								RouteSpecifier: &http_conn.HttpConnectionManager_RouteConfig{
+									RouteConfig: &xdsapi.RouteConfiguration{
+										VirtualHosts: []route.VirtualHost{
+											route.VirtualHost{},
+											route.VirtualHost{},
+											route.VirtualHost{},
+											route.VirtualHost{
+												Routes: []route.Route{
+													route.Route{
+														Action: &route.Route_Route{
+															Route: &route.RouteAction{
+																ClusterSpecifier: &route.RouteAction_WeightedClusters{
+																	WeightedClusters: &route.WeightedCluster{
+																		Clusters: []*route.WeightedCluster_ClusterWeight{
+																			&route.WeightedCluster_ClusterWeight{
+																				Name:   "outbound|9080|v1|reviews.default.svc.cluster.local",
+																				Weight: &types.UInt32Value{Value: 50},
+																			},
+																			&route.WeightedCluster_ClusterWeight{
+																				Name:   "outbound|9080|v3|reviews.default.svc.cluster.local",
+																				Weight: &types.UInt32Value{Value: 50},
+																			},
+																		},
+																	},
+																},
+															},
+														},
+													},
+												},
+											},
+										},
+									},
+								},
+							}),
+						},
+					},
+				},
+			},
+		},
+	}
+	// Clusters
+	cluster := &xdsapi.Cluster{
+		Name:     "outbound|9080||productpage.default.svc.cluster.local",
+		LbPolicy: xdsapi.Cluster_ROUND_ROBIN,
+		Hosts: []*core.Address{
+			&core.Address{
+				Address: &core.Address_SocketAddress{
+					SocketAddress: &core.SocketAddress{
+						Address: "172.16.1.171",
+						PortSpecifier: &core.SocketAddress_PortValue{
+							PortValue: 9080,
+						},
+					},
+				},
+			},
+		},
+	}
+	listeners := []*xdsapi.Listener{listener}
+	clusters := []*xdsapi.Cluster{cluster}
+	conv.ConvertAddOrUpdateListeners(listeners)
+	conv.ConvertUpdateClusters(clusters)
+}
+
+func loadXdsData() {
+	// Listeners
+	listener := &xdsapi.Listener{
+		Name: "0.0.0.0_9080",
+		Address: core.Address{
+			Address: &core.Address_SocketAddress{
+				SocketAddress: &core.SocketAddress{
+					Address: "0.0.0.0",
+					PortSpecifier: &core.SocketAddress_PortValue{
+						PortValue: 9080,
+					},
+				},
+			},
+		},
+		UseOriginalDst: &types.BoolValue{Value: false},
+		DeprecatedV1: &xdsapi.Listener_DeprecatedV1{
+			BindToPort: &types.BoolValue{Value: false},
+		},
+		FilterChains: []xdslistener.FilterChain{
+			xdslistener.FilterChain{
+				FilterChainMatch: nil,
+				TlsContext:       &auth.DownstreamTlsContext{},
+				Filters: []xdslistener.Filter{
+					xdslistener.Filter{
+						Name: "envoy.http_connection_manager",
+						ConfigType: &xdslistener.Filter_Config{
+							Config: MessageToStruct(&http_conn.HttpConnectionManager{
+								RouteSpecifier: &http_conn.HttpConnectionManager_RouteConfig{
+									RouteConfig: &xdsapi.RouteConfiguration{
+										VirtualHosts: []route.VirtualHost{
+											route.VirtualHost{},
+											route.VirtualHost{},
+											route.VirtualHost{},
+											route.VirtualHost{
+												Routes: []route.Route{
+													route.Route{
+														Action: &route.Route_Route{
+															Route: &route.RouteAction{
+																ClusterSpecifier: &route.RouteAction_Cluster{
+																	Cluster: "outbound|9080||reviews.default.svc.cluster.local",
+																},
+															},
+														},
+													},
+												},
+											},
+										},
+									},
+								},
+							}),
+						},
+					},
+				},
+			},
+		},
+	}
+	// Clusters
+	cluster := &xdsapi.Cluster{
+		Name:     "outbound|9080||productpage.default.svc.cluster.local",
+		LbPolicy: xdsapi.Cluster_ROUND_ROBIN,
+		Hosts: []*core.Address{
+			&core.Address{
+				Address: &core.Address_SocketAddress{
+					SocketAddress: &core.SocketAddress{
+						Address: "172.16.1.171",
+						PortSpecifier: &core.SocketAddress_PortValue{
+							PortValue: 9080,
+						},
+					},
+				},
+			},
+		},
+	}
+	listeners := []*xdsapi.Listener{listener}
+	clusters := []*xdsapi.Cluster{cluster}
+	conv.ConvertAddOrUpdateListeners(listeners)
+	conv.ConvertUpdateClusters(clusters)
+}
+
+// MessageToStruct converts from proto message to proto Struct
+func MessageToStruct(msg proto.Message) *types.Struct {
+	s, err := util.MessageToStruct(msg)
+	if err != nil {
+		return &types.Struct{}
+	}
+	return s
 }

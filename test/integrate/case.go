@@ -9,13 +9,13 @@ import (
 	"testing"
 	"time"
 
-	_ "github.com/alipay/sofa-mosn/pkg/filter/network/proxy"
-	_ "github.com/alipay/sofa-mosn/pkg/filter/network/tcpproxy"
-	"github.com/alipay/sofa-mosn/pkg/mosn"
-	"github.com/alipay/sofa-mosn/pkg/protocol"
-	"github.com/alipay/sofa-mosn/pkg/types"
-	"github.com/alipay/sofa-mosn/test/util"
 	"golang.org/x/net/http2"
+	_ "mosn.io/mosn/pkg/filter/network/proxy"
+	_ "mosn.io/mosn/pkg/filter/network/tcpproxy"
+	"mosn.io/mosn/pkg/mosn"
+	"mosn.io/mosn/pkg/protocol"
+	"mosn.io/mosn/pkg/types"
+	"mosn.io/mosn/test/util"
 )
 
 type TestCase struct {
@@ -26,7 +26,7 @@ type TestCase struct {
 	AppServer      util.UpstreamServer
 	ClientMeshAddr string
 	ServerMeshAddr string
-	Stop           chan struct{}
+	Finish         chan bool
 }
 
 func NewTestCase(t *testing.T, app, mesh types.Protocol, server util.UpstreamServer) *TestCase {
@@ -36,7 +36,7 @@ func NewTestCase(t *testing.T, app, mesh types.Protocol, server util.UpstreamSer
 		C:            make(chan error),
 		T:            t,
 		AppServer:    server,
-		Stop:         make(chan struct{}),
+		Finish:       make(chan bool),
 	}
 }
 
@@ -52,9 +52,10 @@ func (c *TestCase) StartProxy() {
 	mesh := mosn.NewMosn(cfg)
 	go mesh.Start()
 	go func() {
-		<-c.Stop
+		<-c.Finish
 		c.AppServer.Close()
 		mesh.Close()
+		c.Finish <- true
 	}()
 	time.Sleep(5 * time.Second) //wait server and mesh start
 }
@@ -70,9 +71,10 @@ func (c *TestCase) Start(tls bool) {
 	mesh := mosn.NewMosn(cfg)
 	go mesh.Start()
 	go func() {
-		<-c.Stop
+		<-c.Finish
 		c.AppServer.Close()
 		mesh.Close()
+		c.Finish <- true
 	}()
 	time.Sleep(5 * time.Second) //wait server and mesh start
 }
@@ -89,12 +91,21 @@ func (c *TestCase) StartX(subprotocol string) {
 	mesh := mosn.NewMosn(cfg)
 	go mesh.Start()
 	go func() {
-		<-c.Stop
+		<-c.Finish
 		c.AppServer.Close()
 		mesh.Close()
+		c.Finish <- true
 	}()
 	time.Sleep(5 * time.Second) //wait server and mesh start
 }
+
+// Finish case and wait close returns
+func (c *TestCase) FinishCase() {
+	c.Finish <- true
+	<-c.Finish
+}
+
+const HTTPTestPath = "test/path"
 
 // mesh to mesh use tls if "istls" is true
 // client do "n" times request, interval time (ms)
@@ -104,7 +115,7 @@ func (c *TestCase) RunCase(n int, interval int) {
 	switch c.AppProtocol {
 	case protocol.HTTP1:
 		call = func() error {
-			resp, err := http.Get(fmt.Sprintf("http://%s/", c.ClientMeshAddr))
+			resp, err := http.Get(fmt.Sprintf("http://%s/%s", c.ClientMeshAddr, HTTPTestPath))
 			if err != nil {
 				return err
 			}
@@ -128,7 +139,7 @@ func (c *TestCase) RunCase(n int, interval int) {
 		}
 		httpClient := http.Client{Transport: tr}
 		call = func() error {
-			resp, err := httpClient.Get(fmt.Sprintf("http://%s/", c.ClientMeshAddr))
+			resp, err := httpClient.Get(fmt.Sprintf("http://%s/%s", c.ClientMeshAddr, HTTPTestPath))
 			if err != nil {
 				return err
 			}

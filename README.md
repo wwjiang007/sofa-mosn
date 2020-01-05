@@ -1,70 +1,47 @@
-# MOSN Project
+![MOSN Logo](https://raw.githubusercontent.com/mosn/community/master/icons/png/mosn-labeled-horizontal.png)
 
-[![Build Status](https://travis-ci.org/alipay/sofa-mosn.svg?branch=master)](https://travis-ci.org/alipay/sofa-mosn)
+[![Build Status](https://travis-ci.com/sofastack/sofa-mosn.svg?branch=master)](https://travis-ci.com/sofastack/sofa-mosn)
 [![codecov](https://codecov.io/gh/alipay/sofa-mosn/branch/master/graph/badge.svg)](https://codecov.io/gh/alipay/sofa-mosn)
 [![Go Report Card](https://goreportcard.com/badge/github.com/alipay/sofa-mosn)](https://goreportcard.com/report/github.com/alipay/sofa-mosn)
 ![license](https://img.shields.io/badge/license-Apache--2.0-green.svg)
 
-MOSN, the short name of Modular Observable Smart Network, is a powerful proxy acting as Service Mesh's data plane like [Envoy](https://www.envoyproxy.io/) but written in GoLang. 
-MOSN supports Envoy and Istio's APIs and can be integrated with [Istio](https://istio.io/), so we use MOSN instead of Envoy in [SOFAMesh](https://github.com/alipay/sofa-mesh).
-The initial version of MOSN was jointly contributed by Ant Financial and UC Business Unit of Alibaba, and we look forward to the community to participate in the
-follow-up development and build an open source excellent project together.
+[中文](README_ZH.md)
 
-## [MOSN Introduction](docs/Introduction.md)
+MOSN is a network proxy written in Golang. It can be used as a cloud-native network data plane, providing services with the following proxy functions:  multi-protocol, modular, intelligent, and secure. MOSN is the short name of Modular Open Smart Network-proxy. MOSN can be integrated with any Service Mesh wich support xDS API. It can also be used as an independent Layer 4 or Layer 7 load balancer, API Gateway, cloud-native Ingress, etc.
 
 ## Features
 
-+ Integrated with Istio
-    + Integrated with Istio version 1.0 and V4 API and can be run based on full dynamic resource configuration
-+ Packet Forwarding
-    + Self-contained network server
-    + Support TCP proxy
-    + Support TProxy mode
-+ Multi-protocol support
-    + HTTP/1.1，HTTP/2.0
-    + SOFARPC
-    + Dubbo(ongoing)
-+ Routing support
-    + Routing in form of virtual host
-    + Routing with headers/url/prefix
-    + Routing with host metadata in form of subset
-    + Routing retry
-+ Cluster Management & Load Balance support
-    + Connection pool
-    + Circuit Breaker
-    + Health Checker
-    + Random/RR LoadBalance
-    + Subset LoadBalance with host's metadata
-+ Observable
-    + Network layer data
-    + Protocol data
-+ TLS support
-    + HTTP/1.x on TLS
-    + HTTP/2 on TLS
-    + SOFARPC on TLS
-+ Process management
-    + Smooth reload
-    + Smooth upgrade
-+ Scalable ability
-    + Support self-defined private protocol
-    + Scalable Network/IO ，stream layer
-    
-## Quick Start
-* [Reference](docs/quickstart/Setup.md)
-   
-## Docs
-* [Catalog](docs/Catalog.md)
+As an open source network proxy, MOSN has the following core functions:
+
++ Support full dynamic resource configuration through xDS API integrated with Service Mesh.
++ Support proxy with TCP, HTTP, and RPC protocols.
++ Support rich routing features.
++ Support reliable upstream management and load balancing capabilities.
++ Support network and protocol layer observability.
++ Support mTLS and protocols on TLS.
++ Support rich extension mechanism to provide highly customizable expansion capabilities.
++ Support process smooth upgrade.
+  
+## Download&Install
+
+Use `go get -u mosn.io/mosn`, or you can git clone the repository to `$GOPATH/src/mosn.io/mosn`.
+
+**Notice**
+
+- If you need to use code before 0.8.1, you may needs to run the script `transfer_path.sh` to fix the import path.
+- If you are in Linux, you should modify the `SED_CMD` in `transfer_path.sh`, see the comment in the script file.
+
+## Documentation
+
+- [MOSN website](http://mosn.io)
+- [Changelog](CHANGELOG.md)
+
+## Contributing
+
+See our [contributor guide](CONTRIBUTING.md).
 
 ## Community
-* [Issues](https://github.com/alipay/sofa-mosn/issues)
 
-## Version
-* [Changelog](docs/CHANGELOG.md)
+Scan the QR code below with [DingTalk](https://www.dingtalk.com) to join the MOSN user group.
 
-## Contribution
-+ [How to contribute the code](docs/develop/CONTRIBUTING.md)
-+ MOSN is still in its infancy with many capabilities need to be completed, so we welcome everyone to participate in and commit code together.
-
-## Thanks
-Thanks to Google, IBM, Lyft for creating the Envoy and Istio system, so that MOSN has a very good reference and we can
-quickly land our own ideas.
+![SOFAMosn user group DingTalk QR code](https://gw.alipayobjects.com/mdn/rms_91f3e6/afts/img/A*NyEzRp3Xq28AAAAAAAAAAABkARQnAQ)

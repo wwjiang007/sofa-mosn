@@ -18,56 +18,150 @@
 package config
 
 import (
+	"encoding/json"
+	"fmt"
 	"io/ioutil"
-	"log"
-	"path/filepath"
+	"os"
+	"path"
+	"time"
 
-	"github.com/alipay/sofa-mosn/pkg/api/v2"
+	"github.com/c2h5oh/datasize"
 	xdsboot "github.com/envoyproxy/go-control-plane/envoy/config/bootstrap/v2"
 	"github.com/gogo/protobuf/jsonpb"
-	"github.com/json-iterator/go"
+	"mosn.io/mosn/pkg/api/v2"
+	"mosn.io/mosn/pkg/utils"
 )
 
 type ContentKey string
 
-// ServerConfig for making up server for mosn
-type ServerConfig struct {
-	//default logger
-	ServerName      string `json:"mosn_server_name"`
-	DefaultLogPath  string `json:"default_log_path,omitempty"`
-	DefaultLogLevel string `json:"default_log_level,omitempty"`
+// Tracing configuration for a server
+type TracingConfig struct {
+	Enable bool                   `json:"enable"`
+	Tracer string                 `json:"tracer"`
+	Driver string                 `json:"driver"`
+	Config map[string]interface{} `json:"config,omitempty"`
+}
 
-	UseNetpollMode bool `json:"use_netpoll_mode,omitempty"`
-	//graceful shutdown config
-	GracefulTimeout v2.DurationConfig `json:"graceful_timeout"`
-
-	//go processor number
-	Processor int `json:"processor"`
-
-	Listeners []v2.Listener `json:"listeners,omitempty"`
+// MetricsConfig for metrics sinks
+type MetricsConfig struct {
+	SinkConfigs  []v2.Filter       `json:"sinks"`
+	StatsMatcher v2.StatsMatcher   `json:"stats_matcher"`
+	ShmZone      string            `json:"shm_zone"`
+	ShmSize      datasize.ByteSize `json:"shm_size"`
 }
 
 // ClusterManagerConfig for making up cluster manager
 // Cluster is the global cluster of mosn
 type ClusterManagerConfig struct {
+	ClusterManagerConfigJson
+	Clusters []v2.Cluster `json:"-"`
+}
+
+type ClusterManagerConfigJson struct {
 	// Note: consider to use standard configure
-	AutoDiscovery bool `json:"auto_discovery"`
+	AutoDiscovery bool `json:"auto_discovery,omitempty"`
 	// Note: this is a hack method to realize cluster's  health check which push by registry
-	RegistryUseHealthCheck bool         `json:"registry_use_health_check"`
-	Clusters               []v2.Cluster `json:"clusters,omitempty"`
+	RegistryUseHealthCheck bool         `json:"registry_use_health_check,omitempty"`
+	ClusterConfigPath      string       `json:"clusters_configs,omitempty"`
+	ClustersJson           []v2.Cluster `json:"clusters,omitempty"`
+}
+
+func (cc *ClusterManagerConfig) UnmarshalJSON(b []byte) error {
+	if err := json.Unmarshal(b, &cc.ClusterManagerConfigJson); err != nil {
+		return err
+	}
+	// only one of the config should be exists
+	if len(cc.ClustersJson) > 0 && cc.ClusterConfigPath != "" {
+		return v2.ErrDuplicateStaticAndDynamic
+	}
+	if len(cc.ClustersJson) > 0 {
+		cc.Clusters = cc.ClustersJson
+	}
+	// Traversing path and parse the json
+	// assume all the files in the path are available json file, and no sub path
+	if cc.ClusterConfigPath != "" {
+		files, err := ioutil.ReadDir(cc.ClusterConfigPath)
+		if err != nil {
+			return err
+		}
+		for _, f := range files {
+			fileName := path.Join(cc.ClusterConfigPath, f.Name())
+			cluster := v2.Cluster{}
+			e := utils.ReadJsonFile(fileName, &cluster)
+			switch e {
+			case nil:
+				cc.Clusters = append(cc.Clusters, cluster)
+			case utils.ErrIgnore:
+			// do nothing
+			default:
+				return e
+			}
+		}
+	}
+	return nil
+}
+
+// Marshal memory config into json, if dynamic mode is configured, write json file
+func (cc ClusterManagerConfig) MarshalJSON() (b []byte, err error) {
+	if cc.ClusterConfigPath == "" {
+		cc.ClustersJson = cc.Clusters
+		return json.Marshal(cc.ClusterManagerConfigJson)
+	}
+	// dynamic mode, should write file
+	// first, get all the files in the directory
+	files, err := ioutil.ReadDir(cc.ClusterConfigPath)
+	if err != nil {
+		return nil, err
+	}
+	allFiles := make(map[string]struct{}, len(files))
+	for _, f := range files {
+		allFiles[f.Name()] = struct{}{}
+	}
+	// file name is virtualhost name, if not exists, use {unixnano}.json
+	for _, cluster := range cc.Clusters {
+		fileName := cluster.Name
+		if fileName == "" {
+			fileName = fmt.Sprintf("%d", time.Now().UnixNano())
+		}
+		data, err := json.MarshalIndent(cluster, "", " ")
+		if err != nil {
+			return nil, err
+		}
+		fileName = fileName + ".json"
+		delete(allFiles, fileName)
+		fileName = path.Join(cc.ClusterConfigPath, fileName)
+		if err := utils.WriteFileSafety(fileName, data, 0644); err != nil {
+			return nil, err
+		}
+	}
+	// delete invalid files
+	for f := range allFiles {
+		os.Remove(path.Join(cc.ClusterConfigPath, f))
+	}
+	return json.Marshal(cc.ClusterManagerConfigJson)
 }
 
 // MOSNConfig make up mosn to start the mosn project
 // Servers contains the listener, filter and so on
 // ClusterManager used to manage the upstream
 type MOSNConfig struct {
-	Servers         []ServerConfig         `json:"servers,omitempty"`         //server config
+	Servers         []v2.ServerConfig      `json:"servers,omitempty"`         //server config
 	ClusterManager  ClusterManagerConfig   `json:"cluster_manager,omitempty"` //cluster config
 	ServiceRegistry v2.ServiceRegistryInfo `json:"service_registry"`          //service registry config, used by service discovery module
 	//tracing config
-	RawDynamicResources jsoniter.RawMessage `json:"dynamic_resources,omitempty"` //dynamic_resources raw message
-	RawStaticResources  jsoniter.RawMessage `json:"static_resources,omitempty"`  //static_resources raw message
-	RawAdmin            jsoniter.RawMessage `json:"admin,omitempty""`            // admin raw message
+	Tracing             TracingConfig   `json:"tracing"`
+	Metrics             MetricsConfig   `json:"metrics"`
+	RawDynamicResources json.RawMessage `json:"dynamic_resources,omitempty"` //dynamic_resources raw message
+	RawStaticResources  json.RawMessage `json:"static_resources,omitempty"`  //static_resources raw message
+	RawAdmin            json.RawMessage `json:"admin,omitempty"`             // admin raw message
+	Debug               PProfConfig     `json:"pprof,omitempty"`
+	Pid                 string          `json:"pid,omitempty"` // pid file
+}
+
+// PProfConfig is used to start a pprof server for debug
+type PProfConfig struct {
+	StartDebug bool `json:"debug"`      // If StartDebug is true, start a pprof, default is false
+	Port       int  `json:"port_value"` // If port value is 0, will use 9090 as default
 }
 
 // Mode is mosn's starting type
@@ -96,15 +190,10 @@ func (c *MOSNConfig) Mode() Mode {
 	return File
 }
 
-var (
-	configPath string
-	config     MOSNConfig
-)
-
 func (c *MOSNConfig) GetAdmin() *xdsboot.Admin {
 	if len(c.RawAdmin) > 0 {
 		adminConfig := &xdsboot.Admin{}
-		err := jsonpb.UnmarshalString(string(config.RawAdmin), adminConfig)
+		err := jsonpb.UnmarshalString(string(c.RawAdmin), adminConfig)
 		if err == nil {
 			return adminConfig
 		}
@@ -112,18 +201,7 @@ func (c *MOSNConfig) GetAdmin() *xdsboot.Admin {
 	return nil
 }
 
-// Load config file and parse
-func Load(path string) *MOSNConfig {
-	log.Println("load config from : ", path)
-	content, err := ioutil.ReadFile(path)
-	if err != nil {
-		log.Fatalln("load config failed, ", err)
-	}
-	configPath, _ = filepath.Abs(path)
-	// translate to lower case
-	err = json.Unmarshal(content, &config)
-	if err != nil {
-		log.Fatalln("json unmarshal config failed, ", err)
-	}
-	return &config
+// protetced configPath, read only
+func GetConfigPath() string {
+	return configPath
 }

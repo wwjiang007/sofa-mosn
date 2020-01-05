@@ -20,13 +20,17 @@ package sofarpc
 import (
 	"context"
 
-	"github.com/alipay/sofa-mosn/pkg/buffer"
+	"mosn.io/mosn/pkg/buffer"
 )
 
-type sofaBufferCtx struct{}
+func init() {
+	buffer.RegisterBuffer(&ins)
+}
 
-func (ctx sofaBufferCtx) Name() int {
-	return buffer.SofaStream
+var ins = sofaBufferCtx{}
+
+type sofaBufferCtx struct {
+	buffer.TempBufferCtx
 }
 
 func (ctx sofaBufferCtx) New() interface{} {
@@ -45,5 +49,5 @@ type sofaBuffers struct {
 
 func sofaBuffersByContext(context context.Context) *sofaBuffers {
 	ctx := buffer.PoolContext(context)
-	return ctx.Find(sofaBufferCtx{}, nil).(*sofaBuffers)
+	return ctx.Find(&ins, nil).(*sofaBuffers)
 }

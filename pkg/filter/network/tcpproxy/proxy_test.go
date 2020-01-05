@@ -4,7 +4,7 @@ import (
 	"net"
 	"testing"
 
-	"github.com/alipay/sofa-mosn/pkg/api/v2"
+	"mosn.io/mosn/pkg/api/v2"
 )
 
 func Test_IpRangeList_Contains(t *testing.T) {

@@ -20,13 +20,14 @@ package v2
 import (
 	"errors"
 
-	"github.com/alipay/sofa-mosn/pkg/log"
 	envoy_api_v2 "github.com/envoyproxy/go-control-plane/envoy/api/v2"
 	envoy_api_v2_core1 "github.com/envoyproxy/go-control-plane/envoy/api/v2/core"
 	ads "github.com/envoyproxy/go-control-plane/envoy/service/discovery/v2"
+	"mosn.io/mosn/pkg/log"
+	"mosn.io/mosn/pkg/types"
 )
 
-func (c *ClientV2) reqEndpoints(streamClient ads.AggregatedDiscoveryService_StreamAggregatedResourcesClient, clusterNames []string) error {
+func (c *ADSClient) reqEndpoints(streamClient ads.AggregatedDiscoveryService_StreamAggregatedResourcesClient, clusterNames []string) error {
 	if streamClient == nil {
 		return errors.New("stream client is nil")
 	}
@@ -37,22 +38,25 @@ func (c *ClientV2) reqEndpoints(streamClient ads.AggregatedDiscoveryService_Stre
 		ResponseNonce: "",
 		ErrorDetail:   nil,
 		Node: &envoy_api_v2_core1.Node{
-			Id:      c.ServiceNode,
-			Cluster: c.ServiceCluster,
+			Id:       types.GetGlobalXdsInfo().ServiceNode,
+			Cluster:  types.GetGlobalXdsInfo().ServiceCluster,
+			Metadata: types.GetGlobalXdsInfo().Metadata,
 		},
 	})
 	if err != nil {
-		log.DefaultLogger.Fatalf("get endpoints fail: %v", err)
+		log.DefaultLogger.Errorf("get endpoints fail: %v", err)
 		return err
 	}
 	return nil
 }
 
-func (c *ClientV2) handleEndpointsResp(resp *envoy_api_v2.DiscoveryResponse) []*envoy_api_v2.ClusterLoadAssignment {
-	lbAssignments := make([]*envoy_api_v2.ClusterLoadAssignment, 0)
+func (c *ADSClient) handleEndpointsResp(resp *envoy_api_v2.DiscoveryResponse) []*envoy_api_v2.ClusterLoadAssignment {
+	lbAssignments := make([]*envoy_api_v2.ClusterLoadAssignment, 0, len(resp.Resources))
 	for _, res := range resp.Resources {
 		lbAssignment := envoy_api_v2.ClusterLoadAssignment{}
-		lbAssignment.Unmarshal(res.GetValue())
+		if err := lbAssignment.Unmarshal(res.GetValue()); err != nil {
+			log.DefaultLogger.Errorf("ADSClient unmarshal lbAssignment fail: %v", err)
+		}
 		lbAssignments = append(lbAssignments, &lbAssignment)
 	}
 	return lbAssignments

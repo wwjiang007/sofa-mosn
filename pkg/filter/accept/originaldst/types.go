@@ -18,7 +18,7 @@
 package originaldst
 
 import (
-	"github.com/alipay/sofa-mosn/pkg/types"
+	"mosn.io/mosn/pkg/types"
 )
 
 // OriginalDst interface contains just one method: OnAccept

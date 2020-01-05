@@ -20,14 +20,15 @@ package mtls
 import (
 	gotls "crypto/tls"
 	"net"
+	"time"
 
 	"encoding/gob"
 	"errors"
 
-	"github.com/alipay/sofa-mosn/pkg/buffer"
-	"github.com/alipay/sofa-mosn/pkg/log"
-	"github.com/alipay/sofa-mosn/pkg/mtls/crypto/tls"
-	"github.com/alipay/sofa-mosn/pkg/types"
+	"mosn.io/mosn/pkg/buffer"
+	"mosn.io/mosn/pkg/log"
+	"mosn.io/mosn/pkg/mtls/crypto/tls"
+	"mosn.io/mosn/pkg/types"
 )
 
 // mtls.TLSConn -> tls.Conn -> mtls.Conn
@@ -47,16 +48,20 @@ type Conn struct {
 }
 
 // Peek returns 1 byte from connection, without draining any buffered data.
-func (c *Conn) Peek() []byte {
+func (c *Conn) Peek() ([]byte, error) {
 	b := make([]byte, 1, 1)
-	n, err := c.Conn.Read(b)
-	if n == 0 {
-		log.DefaultLogger.Infof("TLS Peek() error: %v", err)
-		return nil
+	c.Conn.SetReadDeadline(time.Now().Add(types.DefaultConnReadTimeout))
+	_, err := c.Conn.Read(b)
+	c.Conn.SetReadDeadline(time.Time{}) // clear read deadline
+	if err != nil {
+		if log.DefaultLogger.GetLogLevel() >= log.DEBUG {
+			log.DefaultLogger.Debugf("[mtls] TLS Peek() error: %v", err)
+		}
+		return nil, err
 	}
 	c.peek[0] = b[0]
 	c.haspeek = true
-	return b
+	return b, nil
 }
 
 // Read reads data from the connection.
@@ -96,11 +101,14 @@ func (c *TLSConn) GetTLSInfo(buf types.IoBuffer) int {
 	}
 	info := c.Conn.GetTLSInfo()
 	if info == nil {
-		log.DefaultLogger.Infof("transferTLS failed, TLS handshake is not completed")
+		if log.DefaultLogger.GetLogLevel() >= log.INFO {
+			log.DefaultLogger.Infof("[mtls] transferTLS failed, TLS handshake is not completed")
+		}
 		return 0
 	}
-
-	log.DefaultLogger.Infof("transferTLS Info: %+v", info)
+	if log.DefaultLogger.GetLogLevel() >= log.INFO {
+		log.DefaultLogger.Infof("[mtls] transferTLS Info: %+v", info)
+	}
 
 	size := buf.Len()
 
@@ -158,7 +166,9 @@ func GetTLSConn(c net.Conn, b []byte) (net.Conn, error) {
 		return nil, err
 	}
 
-	log.DefaultLogger.Infof("transferTLSConn Info: %+v", info)
+	if log.DefaultLogger.GetLogLevel() >= log.INFO {
+		log.DefaultLogger.Infof("[mtls] transferTLSConn Info: %+v", info)
+	}
 
 	conn := tls.TransferTLSConn(c, &info)
 	if conn == nil {

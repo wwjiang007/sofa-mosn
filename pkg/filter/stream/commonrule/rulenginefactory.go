@@ -18,8 +18,8 @@
 package commonrule
 
 import (
-	"github.com/alipay/sofa-mosn/pkg/filter/stream/commonrule/model"
-	"github.com/alipay/sofa-mosn/pkg/types"
+	"mosn.io/mosn/pkg/filter/stream/commonrule/model"
+	"mosn.io/mosn/pkg/types"
 )
 
 // RuleEngineFactory as

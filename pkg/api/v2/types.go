@@ -18,8 +18,18 @@
 package v2
 
 import (
+	"bytes"
+	"fmt"
+	"io/ioutil"
 	"net"
+	"os"
+	"path"
 	"time"
+
+	"github.com/envoyproxy/go-control-plane/envoy/api/v2/auth"
+	"github.com/gogo/protobuf/jsonpb"
+	"istio.io/api/mixer/v1/config/client"
+	"mosn.io/mosn/pkg/utils"
 )
 
 // Metadata field can be used to provide additional information about the route.
@@ -35,7 +45,13 @@ const (
 	FAULT_INJECT_NETWORK_FILTER = "fault_inject"
 	RPC_PROXY                   = "rpc_proxy"
 	X_PROXY                     = "x_proxy"
-	MIXER                       = "mixer"
+)
+
+// Stream Filter's Type
+const (
+	MIXER        = "mixer"
+	FaultStream  = "fault"
+	PayloadLimit = "payload_limit"
 )
 
 // ClusterType
@@ -58,46 +74,67 @@ const (
 	LB_ROUNDROBIN LbType = "LB_ROUNDROBIN"
 )
 
-// RoutingPriority
-type RoutingPriority string
-
-// Group of routing priority
-const (
-	DEFAULT RoutingPriority = "DEFAULT"
-	HIGH    RoutingPriority = "HIGH"
-)
-
 // Cluster represents a cluster's information
 type Cluster struct {
-	Name                 string           `json:"name"`
-	ClusterType          ClusterType      `json:"type"`
-	SubType              string           `json:"sub_type"` //not used yet
-	LbType               LbType           `json:"lb_type"`
-	MaxRequestPerConn    uint32           `json:"max_request_per_conn"`
-	ConnBufferLimitBytes uint32           `json:"conn_buffer_limit_bytes"`
-	CirBreThresholds     CircuitBreakers  `json:"circuit_breakers,omitempty"`
-	OutlierDetection     OutlierDetection `json:"outlier_detection,omitempty"` //not used yet
-	HealthCheck          HealthCheck      `json:"health_check,omitempty"`
-	Spec                 ClusterSpecInfo  `json:"spec,omitempty"`
-	LBSubSetConfig       LBSubsetConfig   `json:"lb_subset_config,omitempty"`
-	TLS                  TLSConfig        `json:"tls_context,omitempty"`
-	Hosts                []Host           `json:"hosts"`
+	Name                 string          `json:"name,omitempty"`
+	ClusterType          ClusterType     `json:"type,omitempty"`
+	SubType              string          `json:"sub_type,omitempty"` //not used yet
+	LbType               LbType          `json:"lb_type,omitempty"`
+	MaxRequestPerConn    uint32          `json:"max_request_per_conn,omitempty"`
+	ConnBufferLimitBytes uint32          `json:"conn_buffer_limit_bytes,omitempty"`
+	CirBreThresholds     CircuitBreakers `json:"circuit_breakers,omitempty"`
+	HealthCheck          HealthCheck     `json:"health_check,omitempty"`
+	Spec                 ClusterSpecInfo `json:"spec,omitempty"`
+	LBSubSetConfig       LBSubsetConfig  `json:"lb_subset_config,omitempty"`
+	TLS                  TLSConfig       `json:"tls_context,omitempty"`
+	Hosts                []Host          `json:"hosts,omitempty"`
+	ConnectTimeout       *DurationConfig `json:"connect_timeout,omitempty"`
 }
 
 // HealthCheck is a configuration of health check
 // use DurationConfig to parse string to time.Duration
 type HealthCheck struct {
 	HealthCheckConfig
-	ProtocolCode   byte          `json:"-"`
 	Timeout        time.Duration `json:"-"`
 	Interval       time.Duration `json:"-"`
 	IntervalJitter time.Duration `json:"-"`
+}
+
+// Marshal implement a json.Marshaler
+func (hc HealthCheck) MarshalJSON() (b []byte, err error) {
+	hc.HealthCheckConfig.IntervalConfig.Duration = hc.Interval
+	hc.HealthCheckConfig.IntervalJitterConfig.Duration = hc.IntervalJitter
+	hc.HealthCheckConfig.TimeoutConfig.Duration = hc.Timeout
+	return json.Marshal(hc.HealthCheckConfig)
+}
+
+func (hc *HealthCheck) UnmarshalJSON(b []byte) error {
+	if err := json.Unmarshal(b, &hc.HealthCheckConfig); err != nil {
+		return err
+	}
+	hc.Timeout = hc.TimeoutConfig.Duration
+	hc.Interval = hc.IntervalConfig.Duration
+	hc.IntervalJitter = hc.IntervalJitterConfig.Duration
+	return nil
 }
 
 // Host represenets a host information
 type Host struct {
 	HostConfig
 	MetaData Metadata `json:"-"`
+}
+
+func (h Host) MarshalJSON() (b []byte, err error) {
+	h.HostConfig.MetaDataConfig = metadataToConfig(h.MetaData)
+	return json.Marshal(h.HostConfig)
+}
+
+func (h *Host) UnmarshalJSON(b []byte) error {
+	if err := json.Unmarshal(b, &h.HostConfig); err != nil {
+		return err
+	}
+	h.MetaData = configToMetadata(h.MetaDataConfig)
+	return nil
 }
 
 // Listener contains the listener's information
@@ -109,8 +146,6 @@ type Listener struct {
 	PerConnBufferLimitBytes uint32           `json:"-"` // do not support config
 	InheritListener         *net.TCPListener `json:"-"`
 	Remain                  bool             `json:"-"`
-	LogLevel                uint8            `json:"-"`
-	DisableConnIo           bool             `json:"-"`
 }
 
 // TCPRoute
@@ -135,17 +170,98 @@ type HealthCheckFilter struct {
 	CacheTime time.Duration `json:"-"`
 }
 
+func (hf HealthCheckFilter) MarshalJSON() (b []byte, err error) {
+	hf.HealthCheckFilterConfig.CacheTimeConfig.Duration = hf.CacheTime
+	return json.Marshal(hf.HealthCheckFilterConfig)
+}
+
+func (hf *HealthCheckFilter) UnmarshalJSON(b []byte) error {
+	if err := json.Unmarshal(b, &hf.HealthCheckFilterConfig); err != nil {
+		return err
+	}
+	hf.CacheTime = hf.CacheTimeConfig.Duration
+	return nil
+}
+
 // FaultInject
 type FaultInject struct {
 	FaultInjectConfig
 	DelayDuration uint64 `json:"-"`
 }
 
+// PayloadLimitInject
+type StreamPayloadLimit struct {
+	MaxEntitySize int32 `json:"max_entity_size "`
+	HttpStatus    int32 `json:"http_status"`
+}
+
+func (f FaultInject) Marshal() (b []byte, err error) {
+	f.FaultInjectConfig.DelayDurationConfig.Duration = time.Duration(f.DelayDuration)
+	return json.Marshal(f.FaultInjectConfig)
+}
+
+func (f *FaultInject) UnmarshalJSON(b []byte) error {
+	if err := json.Unmarshal(b, &f.FaultInjectConfig); err != nil {
+		return err
+	}
+	f.DelayDuration = uint64(f.DelayDurationConfig.Duration)
+	return nil
+}
+
+// StreamFaultInject
+type StreamFaultInject struct {
+	Delay           *DelayInject    `json:"delay,omitempty"`
+	Abort           *AbortInject    `json:"abort,omitempty"`
+	UpstreamCluster string          `json:"upstream_cluster,omitempty"`
+	Headers         []HeaderMatcher `json:"headers,omitempty"`
+}
+
+type DelayInject struct {
+	DelayInjectConfig
+	Delay time.Duration `json:"-"`
+}
+
+func (d DelayInject) Marshal() (b []byte, err error) {
+	d.DelayInjectConfig.DelayDurationConfig.Duration = d.Delay
+	return json.Marshal(d.DelayInjectConfig)
+}
+
+func (d *DelayInject) UnmarshalJSON(b []byte) error {
+	if err := json.Unmarshal(b, &d.DelayInjectConfig); err != nil {
+		return err
+	}
+	d.Delay = d.DelayDurationConfig.Duration
+	return nil
+}
+
+type AbortInject struct {
+	Status  int    `json:"status,omitempty"`
+	Percent uint32 `json:"percentage,omitempty"`
+}
+
+type Mixer struct {
+	client.HttpClientConfig
+}
+
 // Router, the list of routes that will be matched, in order, for incoming requests.
 // The first route that matches will be used.
 type Router struct {
 	RouterConfig
+	// Metadata is created from MetadataConfig, which is used to subset
 	Metadata Metadata `json:"-"`
+}
+
+func (r Router) MarshalJSON() (b []byte, err error) {
+	r.RouterConfig.MetadataConfig = metadataToConfig(r.Metadata)
+	return json.Marshal(r.RouterConfig)
+}
+
+func (r *Router) UnmarshalJSON(b []byte) error {
+	if err := json.Unmarshal(b, &r.RouterConfig); err != nil {
+		return err
+	}
+	r.Metadata = configToMetadata(r.MetadataConfig)
+	return nil
 }
 
 // RouteAction represents the information of route request to upstream clusters
@@ -153,6 +269,21 @@ type RouteAction struct {
 	RouterActionConfig
 	MetadataMatch Metadata      `json:"-"`
 	Timeout       time.Duration `json:"-"`
+}
+
+func (r RouteAction) MarshalJSON() (b []byte, err error) {
+	r.RouterActionConfig.MetadataConfig = metadataToConfig(r.MetadataMatch)
+	r.RouterActionConfig.TimeoutConfig.Duration = r.Timeout
+	return json.Marshal(r.RouterActionConfig)
+}
+
+func (r *RouteAction) UnmarshalJSON(b []byte) error {
+	if err := json.Unmarshal(b, &r.RouterActionConfig); err != nil {
+		return err
+	}
+	r.Timeout = r.RouterActionConfig.TimeoutConfig.Duration
+	r.MetadataMatch = configToMetadata(r.MetadataConfig)
+	return nil
 }
 
 // Decorator
@@ -166,10 +297,36 @@ type ClusterWeight struct {
 	MetadataMatch Metadata `json:"-"`
 }
 
+func (cw ClusterWeight) MarshalJSON() (b []byte, err error) {
+	cw.ClusterWeightConfig.MetadataConfig = metadataToConfig(cw.MetadataMatch)
+	return json.Marshal(cw.ClusterWeightConfig)
+}
+
+func (cw *ClusterWeight) UnmarshalJSON(b []byte) error {
+	if err := json.Unmarshal(b, &cw.ClusterWeightConfig); err != nil {
+		return err
+	}
+	cw.MetadataMatch = configToMetadata(cw.MetadataConfig)
+	return nil
+}
+
 // RetryPolicy represents the retry parameters
 type RetryPolicy struct {
 	RetryPolicyConfig
 	RetryTimeout time.Duration `json:"-"`
+}
+
+func (rp RetryPolicy) MarshalJSON() (b []byte, err error) {
+	rp.RetryPolicyConfig.RetryTimeoutConfig.Duration = rp.RetryTimeout
+	return json.Marshal(rp.RetryPolicyConfig)
+}
+
+func (rp *RetryPolicy) UnmarshalJSON(b []byte) error {
+	if err := json.Unmarshal(b, &rp.RetryPolicyConfig); err != nil {
+		return err
+	}
+	rp.RetryTimeout = rp.RetryTimeoutConfig.Duration
+	return nil
 }
 
 // CircuitBreakers is a configuration of circuit breakers
@@ -178,27 +335,19 @@ type CircuitBreakers struct {
 	Thresholds []Thresholds
 }
 
-type Thresholds struct {
-	Priority           RoutingPriority `json:"priority"`
-	MaxConnections     uint32          `json:"max_connections"`
-	MaxPendingRequests uint32          `json:"max_pending_requests"`
-	MaxRequests        uint32          `json:"max_requests"`
-	MaxRetries         uint32          `json:"max_retries"`
+// CircuitBreakers's implements json.Marshaler and json.Unmarshaler
+func (cb CircuitBreakers) MarshalJSON() (b []byte, err error) {
+	return json.Marshal(cb.Thresholds)
+}
+func (cb *CircuitBreakers) UnmarshalJSON(b []byte) (err error) {
+	return json.Unmarshal(b, &cb.Thresholds)
 }
 
-// OutlierDetection not used yet
-type OutlierDetection struct {
-	Consecutive5xx                     uint32
-	Interval                           time.Duration
-	BaseEjectionTime                   time.Duration
-	MaxEjectionPercent                 uint32
-	ConsecutiveGatewayFailure          uint32
-	EnforcingConsecutive5xx            uint32
-	EnforcingConsecutiveGatewayFailure uint32
-	EnforcingSuccessRate               uint32
-	SuccessRateMinimumHosts            uint32
-	SuccessRateRequestVolume           uint32
-	SuccessRateStdevFactor             uint32
+type Thresholds struct {
+	MaxConnections     uint32 `json:"max_connections,omitempty"`
+	MaxPendingRequests uint32 `json:"max_pending_requests,omitempty"`
+	MaxRequests        uint32 `json:"max_requests,omitempty"`
+	MaxRetries         uint32 `json:"max_retries,omitempty"`
 }
 
 // ClusterSpecInfo is a configuration of subscribe
@@ -208,34 +357,68 @@ type ClusterSpecInfo struct {
 
 // SubscribeSpec describes the subscribe server
 type SubscribeSpec struct {
+	Subscriber  string `json:"subscriber,omitempty"`
 	ServiceName string `json:"service_name,omitempty"`
 }
 
 // LBSubsetConfig is a configuration of load balance subset
 type LBSubsetConfig struct {
-	FallBackPolicy  uint8             `json:"fall_back_policy"`
-	DefaultSubset   map[string]string `json:"default_subset"`
-	SubsetSelectors [][]string        `json:"subset_selectors"`
+	FallBackPolicy  uint8             `json:"fall_back_policy,omitempty"`
+	DefaultSubset   map[string]string `json:"default_subset,omitempty"`
+	SubsetSelectors [][]string        `json:"subset_selectors,omitempty"`
 }
 
 // TLSConfig is a configuration of tls context
 type TLSConfig struct {
-	Status       bool                   `json:"status"`
-	Type         string                 `json:"type"`
-	ServerName   string                 `json:"server_name,omitempty"`
-	CACert       string                 `json:"ca_cert,omitempty"`
-	CertChain    string                 `json:"cert_chain,omitempty"`
-	PrivateKey   string                 `json:"private_key,omitempty"`
-	VerifyClient bool                   `json:"verify_client,omitempty"`
-	InsecureSkip bool                   `json:"insecure_skip,omitempty"`
-	CipherSuites string                 `json:"cipher_suites,omitempty"`
-	EcdhCurves   string                 `json:"ecdh_curves,omitempty"`
-	MinVersion   string                 `json:"min_version,omitempty"`
-	MaxVersion   string                 `json:"max_version,omitempty"`
-	ALPN         string                 `json:"alpn,omitempty"`
-	Ticket       string                 `json:"ticket,omitempty"`
-	Fallback     bool                   `json:"fall_back, omitempty"`
-	ExtendVerify map[string]interface{} `json:"extend_verify,omitempty"`
+	Status            bool                   `json:"status,omitempty"`
+	Type              string                 `json:"type,omitempty"`
+	ServerName        string                 `json:"server_name,omitempty"`
+	CACert            string                 `json:"ca_cert,omitempty"`
+	CertChain         string                 `json:"cert_chain,omitempty"`
+	PrivateKey        string                 `json:"private_key,omitempty"`
+	VerifyClient      bool                   `json:"verify_client,omitempty"`
+	RequireClientCert bool                   `json:"require_client_cert,omitempty"`
+	InsecureSkip      bool                   `json:"insecure_skip,omitempty"`
+	CipherSuites      string                 `json:"cipher_suites,omitempty"`
+	EcdhCurves        string                 `json:"ecdh_curves,omitempty"`
+	MinVersion        string                 `json:"min_version,omitempty"`
+	MaxVersion        string                 `json:"max_version,omitempty"`
+	ALPN              string                 `json:"alpn,omitempty"`
+	Ticket            string                 `json:"ticket,omitempty"`
+	Fallback          bool                   `json:"fall_back,omitempty"`
+	ExtendVerify      map[string]interface{} `json:"extend_verify,omitempty"`
+	SdsConfig         *SdsConfig             `json:"sds_source,omitempty"`
+}
+
+type SdsConfig struct {
+	CertificateConfig *SecretConfigWrapper
+	ValidationConfig  *SecretConfigWrapper
+}
+
+type SecretConfigWrapper struct {
+	Config *auth.SdsSecretConfig
+}
+
+func (sc SecretConfigWrapper) MarshalJSON() (b []byte, err error) {
+	newData := &bytes.Buffer{}
+	marshaler := &jsonpb.Marshaler{}
+	err = marshaler.Marshal(newData, sc.Config)
+	return newData.Bytes(), err
+}
+
+func (sc *SecretConfigWrapper) UnmarshalJSON(b []byte) error {
+	secretConfig := &auth.SdsSecretConfig{}
+	err := jsonpb.Unmarshal(bytes.NewReader(b), secretConfig)
+	if err != nil {
+		return err
+	}
+	sc.Config = secretConfig
+	return nil
+}
+
+// Valid checks the whether the SDS Config is valid or not
+func (c *SdsConfig) Valid() bool {
+	return c != nil && c.CertificateConfig != nil && c.ValidationConfig != nil
 }
 
 // AccessLog for making up access log
@@ -247,9 +430,36 @@ type AccessLog struct {
 // FilterChain wraps a set of match criteria, an option TLS context,
 // a set of filters, and various other parameters.
 type FilterChain struct {
-	FilterChainMatch string    `json:"match,omitempty"`
-	TLS              TLSConfig `json:"tls_context,omitempty"`
-	Filters          []Filter  `json:"filters"` // "proxy" and "connection_manager" used at this time
+	FilterChainConfig
+	TLSContexts []TLSConfig `json:"-"`
+}
+
+func (fc FilterChain) MarshalJSON() (b []byte, err error) {
+	if len(fc.TLSContexts) > 0 { // use tls_context_set
+		fc.TLSConfig = nil
+		fc.TLSConfigs = fc.TLSContexts
+	}
+	return json.Marshal(fc.FilterChainConfig)
+}
+
+func (fc *FilterChain) UnmarshalJSON(b []byte) error {
+	if err := json.Unmarshal(b, &fc.FilterChainConfig); err != nil {
+		return err
+	}
+	if fc.TLSConfig != nil && len(fc.TLSConfigs) > 0 {
+		return ErrDuplicateTLSConfig
+	}
+	if len(fc.TLSConfigs) > 0 {
+		fc.TLSContexts = make([]TLSConfig, len(fc.TLSConfigs))
+		copy(fc.TLSContexts, fc.TLSConfigs)
+	} else { // no tls_context_set, use tls_context
+		if fc.TLSConfig == nil { // no tls_context, generate a default one
+			fc.TLSContexts = append(fc.TLSContexts, TLSConfig{})
+		} else { // use tls_context
+			fc.TLSContexts = append(fc.TLSContexts, *fc.TLSConfig)
+		}
+	}
+	return nil
 }
 
 // Filter is a config to make up a filter
@@ -278,71 +488,132 @@ type WebSocketProxy struct {
 
 // Proxy
 type Proxy struct {
-	Name               string                 `json:"name"`
-	DownstreamProtocol string                 `json:"downstream_protocol"`
-	UpstreamProtocol   string                 `json:"upstream_protocol"`
-	RouterConfigName   string                 `json:"router_config_name"`
-	ValidateClusters   bool                   `json:"validate_clusters"`
-	ExtendConfig       map[string]interface{} `json:"extend_config"`
+	Name               string                 `json:"name,omitempty"`
+	DownstreamProtocol string                 `json:"downstream_protocol,omitempty"`
+	UpstreamProtocol   string                 `json:"upstream_protocol,omitempty"`
+	RouterConfigName   string                 `json:"router_config_name,omitempty"`
+	ValidateClusters   bool                   `json:"validate_clusters,omitempty"`
+	ExtendConfig       map[string]interface{} `json:"extend_config,omitempty"`
 }
 
 // HeaderValueOption is header name/value pair plus option to control append behavior.
 type HeaderValueOption struct {
-	Header *HeaderValue `json:"header"`
-	Append *bool        `json:"append"`
+	Header *HeaderValue `json:"header,omitempty"`
+	Append *bool        `json:"append,omitempty"`
 }
 
 // HeaderValue is header name/value pair.
 type HeaderValue struct {
-	Key   string `json:"key"`
-	Value string `json:"value"`
+	Key   string `json:"key,omitempty"`
+	Value string `json:"value,omitempty"`
 }
 
 // RouterConfiguration is a filter for routers
 // Filter type is:  "CONNECTION_MANAGER"
 type RouterConfiguration struct {
-	RouterConfigName        string               `json:"router_config_name"`
-	VirtualHosts            []*VirtualHost       `json:"virtual_hosts"`
-	RequestHeadersToAdd     []*HeaderValueOption `json:"request_headers_to_add"`
-	ResponseHeadersToAdd    []*HeaderValueOption `json:"response_headers_to_add"`
-	ResponseHeadersToRemove []string             `json:"response_headers_to_remove"`
+	VirtualHosts []*VirtualHost `json:"-"`
+	RouterConfigurationConfig
+}
+
+// Marshal memory config into json, if dynamic mode is configured, write json file
+func (rc RouterConfiguration) MarshalJSON() (b []byte, err error) {
+	if rc.RouterConfigPath == "" {
+		rc.StaticVirtualHosts = rc.VirtualHosts
+		return json.Marshal(rc.RouterConfigurationConfig)
+	}
+	// dynamic mode, should write file
+	// first, get all the files in the directory
+	files, err := ioutil.ReadDir(rc.RouterConfigPath)
+	if err != nil {
+		return nil, err
+	}
+	allFiles := make(map[string]struct{}, len(files))
+	for _, f := range files {
+		allFiles[f.Name()] = struct{}{}
+	}
+	// file name is virtualhost name, if not exists, use {unixnano}.json
+	for _, vh := range rc.VirtualHosts {
+		fileName := vh.Name
+		if fileName == "" {
+			fileName = fmt.Sprintf("%d", time.Now().UnixNano())
+		}
+		data, err := json.MarshalIndent(vh, "", " ")
+		if err != nil {
+			return nil, err
+		}
+		fileName = fileName + ".json"
+		delete(allFiles, fileName)
+		fileName = path.Join(rc.RouterConfigPath, fileName)
+		if err := utils.WriteFileSafety(fileName, data, 0644); err != nil {
+			return nil, err
+		}
+	}
+	// delete invalid files
+	for f := range allFiles {
+		os.Remove(path.Join(rc.RouterConfigPath, f))
+	}
+	return json.Marshal(rc.RouterConfigurationConfig)
+}
+
+func (rc *RouterConfiguration) UnmarshalJSON(b []byte) error {
+	if err := json.Unmarshal(b, &rc.RouterConfigurationConfig); err != nil {
+		return err
+	}
+	cfg := rc.RouterConfigurationConfig
+	// only one of the config should be exists
+	if len(cfg.StaticVirtualHosts) > 0 && cfg.RouterConfigPath != "" {
+		return ErrDuplicateStaticAndDynamic
+	}
+	if len(cfg.StaticVirtualHosts) > 0 {
+		rc.VirtualHosts = cfg.StaticVirtualHosts
+	}
+	// Traversing path and parse the json
+	// assume all the files in the path are available json file, and no sub path
+	if cfg.RouterConfigPath != "" {
+		files, err := ioutil.ReadDir(cfg.RouterConfigPath)
+		if err != nil {
+			return err
+		}
+		for _, f := range files {
+			fileName := path.Join(cfg.RouterConfigPath, f.Name())
+			vh := &VirtualHost{}
+			e := utils.ReadJsonFile(fileName, vh)
+			switch e {
+			case nil:
+				rc.VirtualHosts = append(rc.VirtualHosts, vh)
+			case utils.ErrIgnore:
+				// do nothing
+			default:
+				return e
+			}
+		}
+	}
+	return nil
 }
 
 // VirtualHost is used to make up the route table
 type VirtualHost struct {
-	Name                    string               `json:"name"`
-	Domains                 []string             `json:"domains"`
-	VirtualClusters         []VirtualCluster     `json:"virtual_clusters"`
-	Routers                 []Router             `json:"routers"`
-	RequireTLS              string               `json:"require_tls"` // not used yet
-	RequestHeadersToAdd     []*HeaderValueOption `json:"request_headers_to_add"`
-	ResponseHeadersToAdd    []*HeaderValueOption `json:"response_headers_to_add"`
-	ResponseHeadersToRemove []string             `json:"response_headers_to_remove"`
-}
-
-// VirtualCluster is a way of specifying a regex matching rule against certain important endpoints
-// such that statistics are generated explicitly for the matched requests
-type VirtualCluster struct {
-	Pattern string `json:"pattern"`
-	Name    string `json:"name"`
-	Method  string `json:"method"`
+	Name                    string               `json:"name,omitempty"`
+	Domains                 []string             `json:"domains,omitempty"`
+	Routers                 []Router             `json:"routers,omitempty"`
+	RequireTLS              string               `json:"require_tls,omitempty"` // not used yet
+	RequestHeadersToAdd     []*HeaderValueOption `json:"request_headers_to_add,omitempty"`
+	ResponseHeadersToAdd    []*HeaderValueOption `json:"response_headers_to_add,omitempty"`
+	ResponseHeadersToRemove []string             `json:"response_headers_to_remove,omitempty"`
 }
 
 // RouterMatch represents the route matching parameters
 type RouterMatch struct {
-	Prefix        string          `json:"prefix"`
-	Path          string          `json:"path"`
-	Regex         string          `json:"regex"`
-	CaseSensitive bool            `json:"case_sensitive"`
-	Runtime       RuntimeUInt32   `json:"runtime"`
-	Headers       []HeaderMatcher `json:"headers"`
+	Prefix  string          `json:"prefix,omitempty"`  // Match request's Path with Prefix Comparing
+	Path    string          `json:"path,omitempty"`    // Match request's Path with Exact Comparing
+	Regex   string          `json:"regex,omitempty"`   // Match request's Path with Regex Comparing
+	Headers []HeaderMatcher `json:"headers,omitempty"` // Match request's Headers
 }
 
-// RedirectAction represents the redirect parameters
-type RedirectAction struct {
-	HostRedirect string `json:"host_redirect"`
-	PathRedirect string `json:"path_redirect"`
-	ResponseCode uint32 `json:"response_code"`
+// DirectResponseAction represents the direct response parameters
+type DirectResponseAction struct {
+	StatusCode int    `json:"status,omitempty"`
+	Body       string `json:"body,omitempty"`
 }
 
 // WeightedCluster.
@@ -350,38 +621,40 @@ type RedirectAction struct {
 // The request is routed to one of the upstream
 // clusters based on weights assigned to each cluster
 type WeightedCluster struct {
-	Cluster          ClusterWeight `json:"cluster"`
-	RuntimeKeyPrefix string        `json:"runtime_key_prefix"` // not used currently
-}
-
-// RuntimeUInt32 indicates that the route should additionally match on a runtime key
-type RuntimeUInt32 struct {
-	DefaultValue uint32 `json:"default_value"`
-	RuntimeKey   string `json:"runtime_key"`
+	Cluster ClusterWeight `json:"cluster,omitempty"`
 }
 
 // HeaderMatcher specifies a set of headers that the route should match on.
 type HeaderMatcher struct {
-	Name  string `json:"name"`
-	Value string `json:"value"`
-	Regex bool   `json:"regex"`
+	Name  string `json:"name,omitempty"`
+	Value string `json:"value,omitempty"`
+	Regex bool   `json:"regex,omitempty"`
 }
 
 // XProxyExtendConfig
 type XProxyExtendConfig struct {
-	SubProtocol string `json:"sub_protocol"`
+	SubProtocol string `json:"sub_protocol,omitempty"`
 }
 
 // ServiceRegistryInfo
 type ServiceRegistryInfo struct {
-	ServiceAppInfo ApplicationInfo `json:"application"`
-	ServicePubInfo []PublishInfo   `json:"publish_info,omitempty"`
+	ServiceAppInfo ApplicationInfo     `json:"application,omitempty"`
+	ServicePubInfo []PublishInfo       `json:"publish_info,omitempty"`
+	MsgMetaInfo    map[string][]string `json:"msg_meta_info,omitempty"`
+	MqClientKey    map[string]string   `json:"mq_client_key,omitempty"`
+	MqMeta         map[string]string   `json:"mq_meta_info,omitempty"`
+	MqConsumers    map[string][]string `json:"mq_consumers,omitempty"`
 }
+
 type ApplicationInfo struct {
-	AntShareCloud bool   `json:"ant_share_cloud"`
+	AntShareCloud bool   `json:"ant_share_cloud,omitempty"`
 	DataCenter    string `json:"data_center,omitempty"`
 	AppName       string `json:"app_name,omitempty"`
-	Zone          string `json:"zone"`
+	Zone          string `json:"zone,omitempty"`
+	DeployMode    bool   `json:"deploy_mode,omitempty"`
+	MasterSystem  bool   `json:"master_system,omitempty"`
+	CloudName     string `json:"cloud_name,omitempty"`
+	HostMachine   string `json:"host_machine,omitempty"`
 }
 
 // PublishInfo implements json.Marshaler and json.Unmarshaler
@@ -389,7 +662,41 @@ type PublishInfo struct {
 	Pub PublishContent
 }
 
+func (pb PublishInfo) MarshalJSON() (b []byte, err error) {
+	return json.Marshal(pb.Pub)
+}
+func (pb *PublishInfo) UnmarshalJSON(b []byte) (err error) {
+	return json.Unmarshal(b, &pb.Pub)
+}
+
 type PublishContent struct {
 	ServiceName string `json:"service_name,omitempty"`
 	PubData     string `json:"pub_data,omitempty"`
+}
+
+// StatsMatcher is a configuration for disabling stat instantiation.
+// TODO: support inclusion_list
+// TODO: support exclusion list/inclusion_list as pattern
+type StatsMatcher struct {
+	RejectAll       bool     `json:"reject_all,omitempty"`
+	ExclusionLabels []string `json:"exclusion_labels,omitempty"`
+	ExclusionKeys   []string `json:"exclusion_keys,omitempty"`
+}
+
+// ServerConfig for making up server for mosn
+type ServerConfig struct {
+	//default logger
+	ServerName      string `json:"mosn_server_name,omitempty"`
+	DefaultLogPath  string `json:"default_log_path,omitempty"`
+	DefaultLogLevel string `json:"default_log_level,omitempty"`
+	GlobalLogRoller string `json:"global_log_roller,omitempty"`
+
+	UseNetpollMode bool `json:"use_netpoll_mode,omitempty"`
+	//graceful shutdown config
+	GracefulTimeout DurationConfig `json:"graceful_timeout,omitempty"`
+
+	//go processor number
+	Processor int `json:"processor,omitempty"`
+
+	Listeners []Listener `json:"listeners,omitempty"`
 }

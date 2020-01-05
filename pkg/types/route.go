@@ -18,27 +18,40 @@
 package types
 
 import (
-	"container/list"
-	"crypto/md5"
+	"context"
 	"regexp"
 	"time"
 
-	"github.com/alipay/sofa-mosn/pkg/api/v2"
+	v2 "mosn.io/mosn/pkg/api/v2"
 )
 
 // Default parameters for route
+
+type RouterType string
+
 const (
-	GlobalTimeout       = 60 * time.Second
-	DefaultRouteTimeout = 15 * time.Second
-	SofaRouteMatchKey   = "service"
-	RouterMetadataKey   = "filter_metadata"
-	RouterMetadataKeyLb = "mosn.lb"
+	GlobalTimeout                  = 60 * time.Second
+	DefaultRouteTimeout            = 15 * time.Second
+	SofaRouteMatchKey              = "service"
+	RouterMetadataKey              = "filter_metadata"
+	RouterMetadataKeyLb            = "mosn.lb"
+	SofaRouterType      RouterType = "sofa"
 )
 
 // Routers defines and manages all router
 type Routers interface {
-	// Route is used to route with headers
-	Route(headers HeaderMap, randomValue uint64) Route
+	// MatchRoute return first route with headers
+	MatchRoute(headers HeaderMap, randomValue uint64) Route
+	// MatchAllRoutes returns all routes with headers
+	MatchAllRoutes(headers HeaderMap, randomValue uint64) []Route
+	// MatchRouteFromHeaderKV is used to quickly locate and obtain routes in certain scenarios
+	// header is used to find virtual host
+	MatchRouteFromHeaderKV(headers HeaderMap, key, value string) Route
+	// AddRoute adds a route into virtual host, find virtual host by domain
+	// returns the virtualhost index, -1 means no virtual host found
+	AddRoute(domain string, route *v2.Router) int
+	// RemoveAllRoutes will clear all the routes in the virtual host, find virtual host by domain
+	RemoveAllRoutes(domain string) int
 }
 
 // RouterManager is a manager for all routers' config
@@ -46,19 +59,44 @@ type RouterManager interface {
 	// AddRoutersSet adds router config when generated
 	AddOrUpdateRouters(routerConfig *v2.RouterConfiguration) error
 
-	GetRouterWrapperByListenerName(routerConfigName string) RouterWrapper
+	GetRouterWrapperByName(routerConfigName string) RouterWrapper
+
+	AddRoute(routerConfigName, domain string, route *v2.Router) error
+
+	RemoveAllRoutes(routerConfigName, domain string) error
+}
+
+// HandlerStatus returns the Handler's available status
+type HandlerStatus int
+
+// HandlerStatus enum
+const (
+	HandlerAvailable HandlerStatus = iota
+	HandlerNotAvailable
+	HandlerStop
+)
+
+// RouteHandler is an external check handler for a route
+type RouteHandler interface {
+	// IsAvailable returns HandlerStatus represents the handler will be used/not used/stop next handler check
+	IsAvailable(context.Context, ClusterManager) (ClusterSnapshot, HandlerStatus)
+	// Route returns handler's route
+	Route() Route
 }
 type RouterWrapper interface {
+	// GetRouters returns the routers in the wrapper
 	GetRouters() Routers
+	// GetRoutersConfig returns the routers config in the wrapper
+	GetRoutersConfig() v2.RouterConfiguration
 }
 
 // Route is a route instance
 type Route interface {
-	// RedirectRule returns the redirect rule
-	RedirectRule() RedirectRule
-
 	// RouteRule returns the route rule
 	RouteRule() RouteRule
+
+	// DirectResponseRule returns direct response rile
+	DirectResponseRule() DirectResponseRule
 }
 
 // RouteRule defines parameters for a route
@@ -66,32 +104,34 @@ type RouteRule interface {
 	// ClusterName returns the route's cluster name
 	ClusterName() string
 
+	// UpstreamProtocol returns the protocol that route's cluster supported
+	// If it is configured, the protocol will replace the proxy config's upstream protocol
+	UpstreamProtocol() string
+
 	// GlobalTimeout returns the global timeout
 	GlobalTimeout() time.Duration
 
 	// VirtualHost returns the route's virtual host
 	VirtualHost() VirtualHost
 
-	// VirtualCluster returns the route's virtual cluster
-	VirtualCluster(headers map[string]string) VirtualCluster
-
 	// Policy returns the route's route policy
 	Policy() Policy
-
-	//MetadataMatcher() MetadataMatcher
-
-	// Metadata returns the route's route meta data
-	Metadata() RouteMetaData
 
 	// MetadataMatchCriteria returns the metadata that a subset load balancer should match when selecting an upstream host
 	// as we may use weighted cluster's metadata, so need to input cluster's name
 	MetadataMatchCriteria(clusterName string) MetadataMatchCriteria
+
+	// PerFilterConfig returns per filter config from xds
+	PerFilterConfig() map[string]interface{}
 
 	// FinalizeRequestHeaders do potentially destructive header transforms on request headers prior to forwarding
 	FinalizeRequestHeaders(headers HeaderMap, requestInfo RequestInfo)
 
 	// FinalizeResponseHeaders do potentially destructive header transforms on response headers prior to forwarding
 	FinalizeResponseHeaders(headers HeaderMap, requestInfo RequestInfo)
+
+	// PathMatchCriterion returns the route's PathMatchCriterion
+	PathMatchCriterion() PathMatchCriterion
 }
 
 // Policy defines a group of route policy
@@ -99,75 +139,6 @@ type Policy interface {
 	RetryPolicy() RetryPolicy
 
 	ShadowPolicy() ShadowPolicy
-
-	CorsPolicy() CorsPolicy
-
-	LoadBalancerPolicy() LoadBalancerPolicy
-}
-
-// CorsPolicy is a type of Policy
-type CorsPolicy interface {
-	AllowOrigins() []string
-
-	AllowMethods() string
-
-	AllowHeaders() string
-
-	ExposeHeaders() string
-
-	MaxAga() string
-
-	AllowCredentials() bool
-
-	Enabled() bool
-}
-
-// LoadBalancerPolicy is a type of Policy
-type LoadBalancerPolicy interface {
-	HashPolicy() HashPolicy
-}
-
-type AddCookieCallback func(key string, ttl int)
-
-// HashPolicy is a type of Policy
-type HashPolicy interface {
-	GenerateHash(downstreamAddress string, headers map[string]string, addCookieCb AddCookieCallback)
-}
-
-// RateLimitPolicy is a type of Policy
-type RateLimitPolicy interface {
-	Enabled() bool
-
-	GetApplicableRateLimit(stage string) []RateLimitPolicyEntry
-}
-
-type RateLimitPolicyEntry interface {
-	Stage() uint64
-
-	DisableKey() string
-
-	PopulateDescriptors(route RouteRule, descriptors []Descriptor, localSrvCluster string, headers map[string]string, remoteAddr string)
-}
-
-// LimitStatus type
-type LimitStatus string
-
-// LimitStatus types
-const (
-	OK        LimitStatus = "OK"
-	Error     LimitStatus = "Error"
-	OverLimit LimitStatus = "OverLimit"
-)
-
-// DescriptorEntry is a key-value pair
-type DescriptorEntry struct {
-	Key   string
-	Value string
-}
-
-// Descriptor contains a list pf DescriptorEntry
-type Descriptor struct {
-	entries []DescriptorEntry
 }
 
 // RetryCheckStatus type
@@ -204,47 +175,28 @@ type ShadowPolicy interface {
 	RuntimeKey() string
 }
 
-type VirtualServer interface {
-	VirtualCluster() VirtualCluster
-
-	VirtualHost() VirtualHost
-}
-
-type VirtualCluster interface {
-	VirtualClusterName() string
-}
-
 type VirtualHost interface {
 	Name() string
 
-	CorsPolicy() CorsPolicy
-
-	RateLimitPolicy() RateLimitPolicy
-
 	// GetRouteFromEntries returns a Route matched the condition
 	GetRouteFromEntries(headers HeaderMap, randomValue uint64) Route
+	// GetAllRoutesFromEntries returns all Route matched the condition
+	GetAllRoutesFromEntries(headers HeaderMap, randomValue uint64) []Route
+	// GetRouteFromHeaderKV is used to quickly locate and obtain routes in certain scenarios
+	GetRouteFromHeaderKV(key, value string) Route
+	// AddRoute adds a new route into virtual host
+	AddRoute(route *v2.Router) error
+	// RemoveAllRoutes clear all the routes in the virtual host
+	RemoveAllRoutes()
 }
 
-type MetadataMatcher interface {
-	Metadata() RouteMetaData
+// DirectResponseRule contains direct response info
+type DirectResponseRule interface {
 
-	MetadataMatchEntrySet() MetadataMatchEntrySet
-}
-
-type MetadataMatchEntrySet []MetadataMatchEntry
-
-type MetadataMatchEntry interface {
-	Key() string
-
-	Value() string
-}
-
-type RedirectRule interface {
-	NewPath(headers map[string]string) string
-
-	ResponseCode() interface{}
-
-	ResponseBody() string
+	// StatusCode returns the repsonse status code
+	StatusCode() int
+	// Body returns the response body string
+	Body() string
 }
 
 type MetadataMatchCriterion interface {
@@ -252,7 +204,7 @@ type MetadataMatchCriterion interface {
 	MetadataKeyName() string
 
 	// the value for the metadata key
-	MetadataValue() HashedValue
+	MetadataValue() string
 }
 
 type MetadataMatchCriteria interface {
@@ -262,11 +214,6 @@ type MetadataMatchCriteria interface {
 
 	MergeMatchCriteria(metadataMatches map[string]interface{}) MetadataMatchCriteria
 }
-
-// HashedValue is a value as md5's result
-// TODO: change hashed value to [16]string
-// currently use string for easily debug
-type HashedValue string
 
 type HeaderFormat interface {
 	Format(info RequestInfo) string
@@ -284,23 +231,6 @@ const (
 	Regex
 	SofaHeader
 )
-
-// SslRequirements type
-type SslRequirements uint32
-
-// SslRequirements types
-const (
-	NONE SslRequirements = iota
-	EXTERNALONLY
-	ALL
-)
-
-// Config defines the router configuration
-type Config interface {
-	Route(headers map[string]string, randomValue uint64) (Route, string)
-	InternalOnlyHeaders() *list.List
-	Name() string
-}
 
 // QueryParams is a string-string map
 type QueryParams map[string]string
@@ -343,23 +273,4 @@ type LowerCaseString interface {
 type PathMatchCriterion interface {
 	MatchType() PathMatchType
 	Matcher() string
-}
-
-type Loader struct{}
-
-type RouteMetaData map[string]HashedValue
-
-// GenerateHashedValue generates generates hashed valued with md5
-func GenerateHashedValue(input string) HashedValue {
-	data := []byte(input)
-	h := md5.Sum(data)
-	_ = h
-	// return h
-	// todo use hashed value as md5
-	return HashedValue(input)
-}
-
-//EqualHashValue comapres two HashedValues are equaled or not
-func EqualHashValue(h1 HashedValue, h2 HashedValue) bool {
-	return h1 == h2
 }

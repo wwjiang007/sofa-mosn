@@ -18,14 +18,15 @@
 package config
 
 import (
+	"encoding/json"
 	"net"
 	"reflect"
 	"testing"
 	"time"
 
-	"github.com/alipay/sofa-mosn/pkg/api/v2"
-	"github.com/alipay/sofa-mosn/pkg/log"
-	"github.com/alipay/sofa-mosn/pkg/protocol"
+	"istio.io/api/mixer/v1"
+	"mosn.io/mosn/pkg/api/v2"
+	"mosn.io/mosn/pkg/protocol"
 )
 
 type testCallback struct {
@@ -42,6 +43,7 @@ var cb testCallback
 func TestMain(m *testing.M) {
 	RegisterConfigParsedListener(ParseCallbackKeyCluster, cb.ParsedCallback)
 	RegisterConfigParsedListener(ParseCallbackKeyServiceRgtInfo, cb.ParsedCallback)
+	RegisterConfigParsedListener(ParseCallbackKeyProcessor, cb.ParsedCallback)
 	m.Run()
 }
 
@@ -106,7 +108,7 @@ var mockedFilterChains = `
                                 {
                                   "cluster":{
                                     "name":"serverCluster1",
-                                    "weight":90,m
+                                    "weight":90,
                                     "metadata_match":{
                                       "filter_metadata": {
                                         "mosn.lb": {
@@ -143,25 +145,15 @@ var mockedFilterChains = `
 func TestParseRouterConfiguration(t *testing.T) {
 	bytes := []byte(mockedFilterChains)
 	filterChan := &v2.FilterChain{}
-	json.Unmarshal(bytes, filterChan)
+	if err := json.Unmarshal(bytes, filterChan); err != nil {
+		t.Fatalf("init router config failed: %v", err)
+	}
 
 	routerCfg := ParseRouterConfiguration(filterChan)
 
 	if routerCfg.RouterConfigName != "test_router" || len(routerCfg.VirtualHosts) != 1 ||
 		routerCfg.VirtualHosts[0].Name != "sofa" || len(routerCfg.VirtualHosts[0].Routers) != 1 {
-		t.Errorf("TestParseRouterConfiguration error")
-	}
-}
-
-func TestGetListenerDisableIO(t *testing.T) {
-	bytes := []byte(mockedFilterChains)
-	filterChan := &v2.FilterChain{}
-	json.Unmarshal(bytes, filterChan)
-
-	wanted := false
-
-	if disableIO := GetListenerDisableIO(filterChan); disableIO != wanted {
-		t.Errorf("TestGetListenerDisableIO error, want %t but got %t ", disableIO, wanted)
+		t.Errorf("TestParseRouterConfiguration error, config: %v", routerCfg)
 	}
 }
 
@@ -209,6 +201,15 @@ func TestParseClusterConfig(t *testing.T) {
 		t.Error("no callback")
 	}
 
+	if c.MaxRequestPerConn != DefaultMaxRequestPerConn {
+		t.Errorf("Expect cluster.MaxRequestPerConn default value %d but got %d",
+			DefaultMaxRequestPerConn, c.MaxRequestPerConn)
+	}
+
+	if c.ConnBufferLimitBytes != DefaultConnBufferLimitBytes {
+		t.Errorf("Expect cluster.ConnBufferLimitBytes default value%d, but got %d",
+			DefaultConnBufferLimitBytes, c.ConnBufferLimitBytes)
+	}
 }
 func TestParseListenerConfig(t *testing.T) {
 	// test listener inherit replace exists
@@ -220,27 +221,23 @@ func TestParseListenerConfig(t *testing.T) {
 	}
 	defer listener.Close()
 	tcpListener := listener.(*net.TCPListener)
-	inherit := &v2.Listener{
-		Addr:            tcpListener.Addr(),
-		InheritListener: tcpListener,
-	}
+	var inherit []net.Listener
+	inherit = append(inherit, tcpListener)
 
 	lc := &v2.Listener{
 		ListenerConfig: v2.ListenerConfig{
-			AddrConfig:     tcpListener.Addr().String(),
-			LogLevelConfig: "DEBUG",
+			AddrConfig: tcpListener.Addr().String(),
 		},
 	}
-	ln := ParseListenerConfig(lc, []*v2.Listener{inherit})
+	ln := ParseListenerConfig(lc, inherit)
 	if !(ln.Addr != nil &&
 		ln.Addr.String() == tcpListener.Addr().String() &&
 		ln.PerConnBufferLimitBytes == 1<<15 &&
-		ln.InheritListener != nil &&
-		ln.LogLevel == uint8(log.DEBUG)) {
+		ln.InheritListener != nil) {
 		t.Error("listener parse unexpected")
-		t.Log(ln.Addr.String(), ln.InheritListener != nil, ln.LogLevel)
+		t.Log(ln.Addr.String(), ln.InheritListener != nil)
 	}
-	if !inherit.Remain {
+	if inherit[0] != nil {
 		t.Error("no inherit listener")
 	}
 }
@@ -276,6 +273,66 @@ func TestParseFaultInjectFilter(t *testing.T) {
 	faultInject := ParseFaultInjectFilter(m)
 	if !(faultInject.DelayDuration == uint64(15*time.Second) && faultInject.DelayPercent == 100) {
 		t.Error("parse fault inject failed")
+	}
+}
+
+func TestParseStreamPayloadLimitFilter(t *testing.T) {
+	m := map[string]interface{}{
+		"max_entity_size": 100,
+		"http_status":     500,
+	}
+	payloadLimit, err := ParseStreamPayloadLimitFilter(m)
+	if err != nil {
+		t.Error("parse stream payload limit failed")
+		return
+	}
+	if payloadLimit.MaxEntitySize == 100 && payloadLimit.HttpStatus == 500 {
+		t.Error("parse stream payload limit unexpected")
+		return
+	}
+}
+
+func TestParseStreamFaultInjectFilter(t *testing.T) {
+	m := map[string]interface{}{
+		"delay": map[string]interface{}{
+			"fixed_delay": "1s",
+			"percentage":  100,
+		},
+		"abort": map[string]interface{}{
+			"status":     500,
+			"percentage": 100,
+		},
+		"upstream_cluster": "clustername",
+		"headers": []interface{}{
+			map[string]interface{}{
+				"name":  "service",
+				"value": "test",
+				"regex": false,
+			},
+			map[string]interface{}{
+				"name":  "user",
+				"value": "bob",
+				"regex": false,
+			},
+		},
+	}
+	faultInject, err := ParseStreamFaultInjectFilter(m)
+	if err != nil {
+		t.Error("parse stream fault inject failed")
+		return
+	}
+	if !(faultInject.UpstreamCluster == "clustername" &&
+		len(faultInject.Headers) == 2 &&
+		faultInject.Abort != nil &&
+		faultInject.Delay != nil) {
+		t.Error("parse stream fault inject unexpected")
+		return
+	}
+	if !(faultInject.Abort.Percent == 100 && faultInject.Abort.Status == 500) {
+		t.Error("parse stream fault inject's abort unexpected")
+	}
+	if !(faultInject.Delay.Percent == 100 && faultInject.Delay.Delay == time.Second) {
+		t.Error("parse stream fault inject's delay unexpected")
 	}
 }
 
@@ -350,5 +407,38 @@ func TestParseServiceRegistry(t *testing.T) {
 	ParseServiceRegistry(v2.ServiceRegistryInfo{})
 	if cb.Count != 1 {
 		t.Error("no callback")
+	}
+}
+
+func TestParseMixerFilter(t *testing.T) {
+	m := map[string]interface{}{
+		"mixer_attributes": map[string]interface{}{
+			"attributes": map[string]interface{}{
+				"context.reporter.kind": map[string]interface{}{
+					"string_value": "outbound",
+				},
+			},
+		},
+	}
+
+	mixer := ParseMixerFilter(m)
+	if mixer == nil {
+		t.Errorf("parse mixer config error")
+	}
+
+	if mixer.MixerAttributes == nil {
+		t.Errorf("parse mixer config error")
+	}
+	val, exist := mixer.MixerAttributes.Attributes["context.reporter.kind"]
+	if !exist {
+		t.Errorf("parse mixer config error")
+	}
+
+	strVal, ok := val.Value.(*v1.Attributes_AttributeValue_StringValue)
+	if !ok {
+		t.Errorf("parse mixer config error")
+	}
+	if strVal.StringValue != "outbound" {
+		t.Errorf("parse mixer config error")
 	}
 }

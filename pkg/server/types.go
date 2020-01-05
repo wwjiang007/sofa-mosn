@@ -18,29 +18,18 @@
 package server
 
 import (
-	"os"
 	"time"
 
-	"github.com/alipay/sofa-mosn/pkg/api/v2"
-	"github.com/alipay/sofa-mosn/pkg/log"
-	"github.com/alipay/sofa-mosn/pkg/types"
-)
-
-const (
-	MosnBasePath = string(os.PathSeparator) + "home" + string(os.PathSeparator) +
-		"admin" + string(os.PathSeparator) + "mosn"
-
-	MosnLogBasePath = MosnBasePath + string(os.PathSeparator) + "logs"
-
-	MosnLogDefaultPath = MosnLogBasePath + string(os.PathSeparator) + "mosn.log"
-
-	MosnPidFileName = "mosn.pid"
+	"mosn.io/mosn/pkg/api/v2"
+	"mosn.io/mosn/pkg/log"
+	"mosn.io/mosn/pkg/types"
 )
 
 type Config struct {
 	ServerName      string
 	LogPath         string
 	LogLevel        log.Level
+	LogRoller       string
 	GracefulTimeout time.Duration
 	Processor       int
 	UseNetpollMode  bool

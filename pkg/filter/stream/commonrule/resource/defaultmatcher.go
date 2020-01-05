@@ -20,9 +20,9 @@ package resource
 import (
 	"strings"
 
-	"github.com/alipay/sofa-mosn/pkg/filter/stream/commonrule/model"
-	"github.com/alipay/sofa-mosn/pkg/protocol"
-	"github.com/alipay/sofa-mosn/pkg/types"
+	"mosn.io/mosn/pkg/filter/stream/commonrule/model"
+	"mosn.io/mosn/pkg/protocol"
+	"mosn.io/mosn/pkg/types"
 )
 
 // DefaultMatcher macher
@@ -49,11 +49,11 @@ func (m *DefaultMatcher) Match(headers types.HeaderMap, resourceConfig *model.Re
 }
 
 func (*DefaultMatcher) matchHeaders(headers types.HeaderMap, resourceConfig *model.ResourceConfig) bool {
-	matched := resourceConfig.ParamsRelation != RelationOr
+	matched := resourceConfig.HeadersRelation != RelationOr
 	for _, comparison := range resourceConfig.Headers {
 		value, _ := headers.Get(comparison.Key)
 		flag := compare(comparison, value)
-		if resourceConfig.ParamsRelation != RelationOr {
+		if resourceConfig.HeadersRelation != RelationOr {
 			matched = matched && flag
 		} else {
 			matched = matched || flag

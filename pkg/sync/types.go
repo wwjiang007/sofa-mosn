@@ -43,7 +43,7 @@ type ShardWorkerPool interface {
 	Shard(source uint32) uint32
 
 	// Offer puts the job into the corresponding shard and execute it.
-	Offer(job ShardJob)
+	Offer(job ShardJob, block bool)
 }
 
 // WorkerPool provides a pool for goroutines
@@ -56,4 +56,6 @@ type WorkerPool interface {
 	// Schedule try to acquire pooled worker goroutine to execute the specified task first,
 	// but would not block if no worker goroutine is available. A temp goroutine will be created for task execution.
 	ScheduleAlways(task func())
+
+	ScheduleAuto(task func())
 }

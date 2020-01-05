@@ -17,6 +17,11 @@
 
 package http
 
+import (
+	"github.com/valyala/fasthttp"
+	"mosn.io/mosn/pkg/types"
+)
+
 type Code uint32
 
 const (
@@ -81,3 +86,165 @@ const (
 	NotExtended                   = 510
 	NetworkAuthenticationRequired = 511
 )
+
+type RequestHeader struct {
+	*fasthttp.RequestHeader
+
+	// Due to the fact that fasthttp's implementation doesn't have correct semantic for Set("key", "") and Peek("key") at the
+	// first time of usage. We need another way for compensate.
+	//
+	// The problem is caused by the func initHeaderKV, if the original kv.value is nil, ant input value is also nil,
+	// then the final kv.value remains nil.
+	//
+	// kv.value = append(kv.value[:0], value...)
+	//
+	// fasthttp do has the kv entry, but kv.value is nil, so Peek("key") return nil. But we want "" instead.
+	EmptyValueHeaders map[string]bool
+}
+
+// Get value of key
+func (h RequestHeader) Get(key string) (string, bool) {
+	result := h.Peek(key)
+	if result != nil || h.EmptyValueHeaders[key] {
+		return string(result), true
+	}
+	return "", false
+}
+
+// Set key-value pair in header map, the previous pair will be replaced if exists
+func (h RequestHeader) Set(key string, value string) {
+	h.RequestHeader.Set(key, value)
+	if value == "" {
+		if h.EmptyValueHeaders == nil {
+			h.EmptyValueHeaders = make(map[string]bool)
+		}
+		h.EmptyValueHeaders[key] = true
+	}
+}
+
+// Add value for given key.
+// Multiple headers with the same key may be added with this function.
+// Use Set for setting a single header for the given key.
+func (h RequestHeader) Add(key, value string) {
+	h.RequestHeader.Add(key, value)
+}
+
+// Del delete pair of specified key
+func (h RequestHeader) Del(key string) {
+	h.RequestHeader.Del(key)
+	delete(h.EmptyValueHeaders, key)
+}
+
+// Range calls f sequentially for each key and value present in the map.
+// If f returns false, range stops the iteration.
+func (h RequestHeader) Range(f func(key, value string) bool) {
+	stopped := false
+	h.VisitAll(func(key, value []byte) {
+		if stopped {
+			return
+		}
+		stopped = !f(string(key), string(value))
+	})
+}
+
+func (h RequestHeader) Clone() types.HeaderMap {
+	copy := &fasthttp.RequestHeader{}
+	h.CopyTo(copy)
+
+	var copyEmptyMap map[string]bool
+	if h.EmptyValueHeaders != nil {
+		copyEmptyMap = make(map[string]bool, len(h.EmptyValueHeaders))
+		for k, v := range h.EmptyValueHeaders {
+			copyEmptyMap[k] = v
+		}
+	}
+	return RequestHeader{copy, copyEmptyMap}
+}
+
+func (h RequestHeader) ByteSize() (size uint64) {
+	h.VisitAll(func(key, value []byte) {
+		size += uint64(len(key) + len(value))
+	})
+	return size
+}
+
+type ResponseHeader struct {
+	*fasthttp.ResponseHeader
+
+	// Due the fact that fasthttp's implement has no correct semantic for Set("key", "") and Peek("key") at the
+	// first usage. We need another way for compensate.
+	//
+	// The problem is caused by the func initHeaderKV, if the original kv.value is nil, ant input value is also nil,
+	// then the final kv.value remains nil.
+	//
+	// kv.value = append(kv.value[:0], value...)
+	//
+	// fasthttp do has the kv entry, but kv.value is nil, so Peek("key") return nil. But we want "" instead.
+	EmptyValueHeaders map[string]bool
+}
+
+// Get value of key
+func (h ResponseHeader) Get(key string) (string, bool) {
+	result := h.Peek(key)
+	if result != nil || h.EmptyValueHeaders[key] {
+		return string(result), true
+	}
+	return "", false
+}
+
+// Set key-value pair in header map, the previous pair will be replaced if exists
+func (h ResponseHeader) Set(key string, value string) {
+	h.ResponseHeader.Set(key, value)
+	if value == "" {
+		if h.EmptyValueHeaders == nil {
+			h.EmptyValueHeaders = make(map[string]bool)
+		}
+		h.EmptyValueHeaders[key] = true
+	}
+}
+
+// Add value for given key.
+// Multiple headers with the same key may be added with this function.
+// Use Set for setting a single header for the given key.
+func (h ResponseHeader) Add(key, value string) {
+	h.ResponseHeader.Add(key, value)
+}
+
+// Del delete pair of specified key
+func (h ResponseHeader) Del(key string) {
+	h.ResponseHeader.Del(key)
+	delete(h.EmptyValueHeaders, key)
+}
+
+// Range calls f sequentially for each key and value present in the map.
+// If f returns false, range stops the iteration.
+func (h ResponseHeader) Range(f func(key, value string) bool) {
+	stopped := false
+	h.VisitAll(func(key, value []byte) {
+		if stopped {
+			return
+		}
+		stopped = !f(string(key), string(value))
+	})
+}
+
+func (h ResponseHeader) Clone() types.HeaderMap {
+	copy := &fasthttp.ResponseHeader{}
+	h.CopyTo(copy)
+
+	var copyEmptyMap map[string]bool
+	if h.EmptyValueHeaders != nil {
+		copyEmptyMap = make(map[string]bool, len(h.EmptyValueHeaders))
+		for k, v := range h.EmptyValueHeaders {
+			copyEmptyMap[k] = v
+		}
+	}
+	return ResponseHeader{copy, copyEmptyMap}
+}
+
+func (h ResponseHeader) ByteSize() (size uint64) {
+	h.VisitAll(func(key, value []byte) {
+		size += uint64(len(key) + len(value))
+	})
+	return size
+}

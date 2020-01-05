@@ -4,10 +4,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/alipay/sofa-mosn/pkg/log"
-	"github.com/alipay/sofa-mosn/pkg/protocol"
-	"github.com/alipay/sofa-mosn/pkg/types"
-	"github.com/alipay/sofa-mosn/test/fuzzy"
+	"mosn.io/mosn/pkg/log"
+	"mosn.io/mosn/pkg/protocol"
+	"mosn.io/mosn/pkg/types"
+	"mosn.io/mosn/test/fuzzy"
 )
 
 func runClient(t *testing.T, meshAddr string, stop chan struct{}) {
@@ -68,6 +68,7 @@ func TestServerCloseToHTTP1(t *testing.T) {
 	log.StartLogger.Infof("[FUZZY TEST] HTTP2 Server Close HTTP1 %d", caseIndex)
 	runServerCloseMeshToMesh(t, protocol.HTTP1)
 }
+
 func TestServerCloseToHTTP2(t *testing.T) {
 	caseIndex++
 	log.StartLogger.Infof("[FUZZY TEST] HTTP2 Server Close HTTP2 %d", caseIndex)

@@ -10,17 +10,18 @@ import (
 	"testing"
 	"time"
 
-	_ "github.com/alipay/sofa-mosn/pkg/filter/network/proxy"
-	"github.com/alipay/sofa-mosn/pkg/log"
-	"github.com/alipay/sofa-mosn/pkg/protocol"
-	"github.com/alipay/sofa-mosn/pkg/protocol/sofarpc"
-	_ "github.com/alipay/sofa-mosn/pkg/protocol/sofarpc/codec"
-	_ "github.com/alipay/sofa-mosn/pkg/stream/http"
-	_ "github.com/alipay/sofa-mosn/pkg/stream/http2"
-	_ "github.com/alipay/sofa-mosn/pkg/stream/sofarpc"
-	"github.com/alipay/sofa-mosn/pkg/types"
-	"github.com/alipay/sofa-mosn/test/fuzzy"
-	"github.com/alipay/sofa-mosn/test/util"
+	_ "mosn.io/mosn/pkg/filter/network/proxy"
+	"mosn.io/mosn/pkg/log"
+	"mosn.io/mosn/pkg/protocol/rpc"
+	"mosn.io/mosn/pkg/protocol/rpc/sofarpc"
+	_ "mosn.io/mosn/pkg/protocol/rpc/sofarpc/codec"
+	_ "mosn.io/mosn/pkg/protocol/rpc/sofarpc/conv"
+	_ "mosn.io/mosn/pkg/stream/http"
+	_ "mosn.io/mosn/pkg/stream/http2"
+	_ "mosn.io/mosn/pkg/stream/sofarpc"
+	"mosn.io/mosn/pkg/types"
+	"mosn.io/mosn/test/fuzzy"
+	"mosn.io/mosn/test/util"
 )
 
 var (
@@ -35,7 +36,7 @@ type RPCStatusClient struct {
 	addr            string
 	t               *testing.T
 	mutex           sync.Mutex
-	streamID        uint32
+	streamID        uint64
 	unexpectedCount uint32
 	successCount    uint32
 	failureCount    uint32
@@ -60,18 +61,17 @@ func (c *RPCStatusClient) SendRequest() {
 	if !check {
 		return
 	}
-	ID := atomic.AddUint32(&c.streamID, 1)
-	streamID := protocol.StreamIDConv(ID)
-	requestEncoder := c.Codec.NewStream(context.Background(), streamID, c)
+	ID := atomic.AddUint64(&c.streamID, 1)
+	requestEncoder := c.Codec.NewStream(context.Background(), c)
 	headers := util.BuildBoltV1Request(ID)
 	requestEncoder.AppendHeaders(context.Background(), headers, true)
 }
 
-func (c *RPCStatusClient) OnReceiveHeaders(context context.Context, headers types.HeaderMap, endStream bool) {
-	if cmd, ok := headers.(sofarpc.ProtoBasicCmd); ok {
-		status := cmd.GetRespStatus()
+func (c *RPCStatusClient) OnReceive(ctx context.Context, headers types.HeaderMap, data types.IoBuffer, trailers types.HeaderMap) {
+	if cmd, ok := headers.(rpc.RespStatus); ok {
+		status := int16(cmd.RespStatus())
 
-		if int16(status) == sofarpc.RESPONSE_STATUS_SUCCESS {
+		if status == sofarpc.RESPONSE_STATUS_SUCCESS {
 			c.successCount++
 		} else {
 			c.failureCount++
@@ -80,6 +80,7 @@ func (c *RPCStatusClient) OnReceiveHeaders(context context.Context, headers type
 		c.t.Errorf("unexpected headers type:%v\n", headers)
 	}
 }
+
 func (c *RPCStatusClient) Connect() error {
 	c.mutex.Lock()
 	check := c.started
@@ -132,7 +133,7 @@ type RPCServer struct {
 }
 
 func NewRPCServer(t *testing.T, id string, addr string) *RPCServer {
-	server := util.NewUpstreamServer(t, addr, util.ServeBoltV1)
+	server := util.NewRPCServer(t, addr, util.Bolt1)
 	return &RPCServer{
 		UpstreamServer: server,
 		t:              t,
@@ -176,7 +177,7 @@ func (s *RPCServer) ReStart() {
 		return
 	}
 	log.StartLogger.Infof("[FUZZY TEST] server restart #%s", s.ID)
-	server := util.NewUpstreamServer(s.t, s.UpstreamServer.Addr(), util.ServeBoltV1)
+	server := util.NewRPCServer(s.t, s.UpstreamServer.Addr(), util.Bolt1)
 	s.UpstreamServer = server
 	s.started = true
 	s.UpstreamServer.GoServe()
@@ -201,8 +202,8 @@ func CreateServers(t *testing.T, serverList []string, stop chan struct{}) []fuzz
 //main
 func TestMain(m *testing.M) {
 	util.MeshLogPath = "./logs/rpc.log"
-	util.MeshLogLevel = "INFO"
-	log.InitDefaultLogger(util.MeshLogPath, log.INFO)
+	util.MeshLogLevel = "DEBUG"
+	log.InitDefaultLogger(util.MeshLogPath, log.DEBUG)
 	casetime := flag.Int64("casetime", 1, "-casetime=1(min)")
 	flag.Parse()
 	caseDuration = time.Duration(*casetime) * time.Minute

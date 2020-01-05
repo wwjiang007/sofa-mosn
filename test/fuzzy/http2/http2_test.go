@@ -11,14 +11,14 @@ import (
 	"testing"
 	"time"
 
-	_ "github.com/alipay/sofa-mosn/pkg/filter/network/proxy"
-	"github.com/alipay/sofa-mosn/pkg/log"
-	_ "github.com/alipay/sofa-mosn/pkg/stream/http"
-	_ "github.com/alipay/sofa-mosn/pkg/stream/http2"
-	_ "github.com/alipay/sofa-mosn/pkg/stream/sofarpc"
-	"github.com/alipay/sofa-mosn/test/fuzzy"
-	"github.com/alipay/sofa-mosn/test/util"
 	"golang.org/x/net/http2"
+	_ "mosn.io/mosn/pkg/filter/network/proxy"
+	"mosn.io/mosn/pkg/log"
+	_ "mosn.io/mosn/pkg/stream/http"
+	_ "mosn.io/mosn/pkg/stream/http2"
+	_ "mosn.io/mosn/pkg/stream/sofarpc"
+	"mosn.io/mosn/test/fuzzy"
+	"mosn.io/mosn/test/util"
 )
 
 var (
@@ -144,8 +144,8 @@ func CreateServers(t *testing.T, serverList []string, stop chan struct{}) []fuzz
 //main
 func TestMain(m *testing.M) {
 	util.MeshLogPath = "./logs/rpc.log"
-	util.MeshLogLevel = "INFO"
-	log.InitDefaultLogger(util.MeshLogPath, log.INFO)
+	util.MeshLogLevel = "TRACE"
+	log.InitDefaultLogger(util.MeshLogPath, log.TRACE)
 	casetime := flag.Int64("casetime", 1, "-casetime=1(min)")
 	flag.Parse()
 	caseDuration = time.Duration(*casetime) * time.Minute

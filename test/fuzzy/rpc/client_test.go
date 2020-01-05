@@ -5,11 +5,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/alipay/sofa-mosn/pkg/log"
-	"github.com/alipay/sofa-mosn/pkg/protocol"
-	"github.com/alipay/sofa-mosn/pkg/types"
-	"github.com/alipay/sofa-mosn/test/fuzzy"
-	"github.com/alipay/sofa-mosn/test/util"
+	"mosn.io/mosn/pkg/log"
+	"mosn.io/mosn/pkg/protocol"
+	"mosn.io/mosn/pkg/types"
+	"mosn.io/mosn/test/fuzzy"
+	"mosn.io/mosn/test/util"
 )
 
 func runClientClose(t *testing.T, stop chan struct{}, meshAddr string) {

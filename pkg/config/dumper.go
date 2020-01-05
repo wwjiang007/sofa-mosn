@@ -18,35 +18,132 @@
 package config
 
 import (
-	"io/ioutil"
+	"encoding/json"
 	"sync"
+	"sync/atomic"
+	"time"
 
-	"github.com/alipay/sofa-mosn/pkg/admin"
-	"github.com/alipay/sofa-mosn/pkg/log"
+	"mosn.io/mosn/pkg/admin/store"
+	v2 "mosn.io/mosn/pkg/api/v2"
+	"mosn.io/mosn/pkg/log"
+	"mosn.io/mosn/pkg/types"
+	"mosn.io/mosn/pkg/utils"
 )
 
-var fileMutex = new(sync.Mutex)
+var (
+	once    sync.Once
+	lock    sync.Mutex
+	dumping int32
+)
+
+func DumpLock() {
+	lock.Lock()
+}
+
+func DumpUnlock() {
+	lock.Unlock()
+}
+
+func setDump() {
+	atomic.CompareAndSwapInt32(&dumping, 0, 1)
+}
+
+func getDump() bool {
+	return atomic.CompareAndSwapInt32(&dumping, 1, 0)
+}
+
+type routerConfigMap struct {
+	config map[string]*v2.RouterConfiguration
+	sync.Mutex
+}
+
+var routerMap = &routerConfigMap{
+	config: make(map[string]*v2.RouterConfiguration),
+}
+
+func dumpRouterConfig() bool {
+	routerMap.Lock()
+	defer routerMap.Unlock()
+	for listenername, routerConfig := range routerMap.config {
+		ln, idx := findListener(listenername)
+		if idx == -1 {
+			continue
+		}
+		delete(routerMap.config, listenername)
+		// support only one filter chain
+		configLock.Lock()
+		nfs := ln.FilterChains[0].Filters
+		filterIndex := -1
+		for i, nf := range nfs {
+			if nf.Type == v2.CONNECTION_MANAGER {
+				filterIndex = i
+				break
+			}
+		}
+
+		if data, err := json.MarshalIndent(routerConfig, "", " "); err == nil {
+			cfg := make(map[string]interface{})
+			if err := json.Unmarshal(data, &cfg); err != nil {
+				log.DefaultLogger.Errorf("[config] [dump] invalid router config, update config failed")
+				continue
+			}
+			filter := v2.Filter{
+				Type:   v2.CONNECTION_MANAGER,
+				Config: cfg,
+			}
+			if filterIndex == -1 {
+				nfs = append(nfs, filter)
+				ln.FilterChains[0].Filters = nfs
+				listeners := config.Servers[0].Listeners
+				if idx < len(listeners) {
+					listeners[idx] = ln
+				}
+			} else {
+				nfs[filterIndex] = filter
+			}
+		}
+		configLock.Unlock()
+	}
+	return true
+}
 
 func dump(dirty bool) {
-	fileMutex.Lock()
-	defer fileMutex.Unlock()
-
 	if dirty {
-		//log.DefaultLogger.Println("dump config to: ", configPath)
-		log.DefaultLogger.Debugf("dump config content: %+v", config)
+		setDump()
+	}
+}
+
+func DumpConfig() {
+	if getDump() {
+		//update router config
+		dumpRouterConfig()
+
+		log.DefaultLogger.Debugf("[config] [dump] dump config content: %+v", config)
 
 		//update mosn_config
-		admin.SetMOSNConfig(config)
-		//todo: ignore zero values in config struct @boqin
+		store.SetMOSNConfig(config)
+		// use golang original json lib, so the marshal ident can handle MarshalJSON interface implement correctly
 		content, err := json.MarshalIndent(config, "", "  ")
 		if err == nil {
-			err = ioutil.WriteFile(configPath, content, 0644)
+			err = utils.WriteFileSafety(configPath, content, 0644)
 		}
 
 		if err != nil {
-			log.DefaultLogger.Errorf("dump config failed, caused by: " + err.Error())
+			log.DefaultLogger.Alertf(types.ErrorKeyConfigDump, "dump config failed, caused by: "+err.Error())
 		}
-	} else {
-		log.DefaultLogger.Infof("config is clean no needed to dump")
 	}
+}
+
+// DumpConfigHandler should be called in a goroutine
+// we call it in mosn/starter with GoWithRecover, which can handle the panic information
+func DumpConfigHandler() {
+	once.Do(func() {
+		for {
+			time.Sleep(3 * time.Second)
+
+			DumpLock()
+			DumpConfig()
+			DumpUnlock()
+		}
+	})
 }

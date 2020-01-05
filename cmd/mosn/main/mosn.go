@@ -20,33 +20,47 @@ package main
 import (
 	_ "flag"
 	"os"
+	"strconv"
 	"time"
 
-	_ "github.com/alipay/sofa-mosn/pkg/buffer"
-	_ "github.com/alipay/sofa-mosn/pkg/filter/network/proxy"
-	_ "github.com/alipay/sofa-mosn/pkg/filter/network/tcpproxy"
-	_ "github.com/alipay/sofa-mosn/pkg/filter/stream/healthcheck/sofarpc"
-	_ "github.com/alipay/sofa-mosn/pkg/network"
-	_ "github.com/alipay/sofa-mosn/pkg/protocol"
-	_ "github.com/alipay/sofa-mosn/pkg/protocol/sofarpc/codec"
-	_ "github.com/alipay/sofa-mosn/pkg/protocol/sofarpc/conv"
-	_ "github.com/alipay/sofa-mosn/pkg/stream/http"
-	_ "github.com/alipay/sofa-mosn/pkg/stream/http2"
-	_ "github.com/alipay/sofa-mosn/pkg/stream/sofarpc"
-	_ "github.com/alipay/sofa-mosn/pkg/stream/xprotocol"
-	_ "github.com/alipay/sofa-mosn/pkg/upstream/healthcheck"
-	_ "github.com/alipay/sofa-mosn/pkg/xds"
 	"github.com/urfave/cli"
+	_ "mosn.io/mosn/pkg/buffer"
+	_ "mosn.io/mosn/pkg/filter/network/proxy"
+	_ "mosn.io/mosn/pkg/filter/network/tcpproxy"
+	_ "mosn.io/mosn/pkg/filter/stream/faultinject"
+	_ "mosn.io/mosn/pkg/filter/stream/healthcheck/sofarpc"
+	_ "mosn.io/mosn/pkg/filter/stream/mixer"
+	_ "mosn.io/mosn/pkg/filter/stream/payloadlimit"
+	_ "mosn.io/mosn/pkg/metrics/sink"
+	_ "mosn.io/mosn/pkg/metrics/sink/prometheus"
+	_ "mosn.io/mosn/pkg/network"
+	_ "mosn.io/mosn/pkg/protocol"
+	_ "mosn.io/mosn/pkg/protocol/http/conv"
+	_ "mosn.io/mosn/pkg/protocol/http2/conv"
+	_ "mosn.io/mosn/pkg/protocol/rpc/sofarpc/codec"
+	_ "mosn.io/mosn/pkg/protocol/rpc/sofarpc/conv"
+	_ "mosn.io/mosn/pkg/protocol/rpc/xprotocol/tars"
+	_ "mosn.io/mosn/pkg/router"
+	_ "mosn.io/mosn/pkg/stream/http"
+	_ "mosn.io/mosn/pkg/stream/http2"
+	_ "mosn.io/mosn/pkg/stream/sofarpc"
+	_ "mosn.io/mosn/pkg/stream/xprotocol"
+	_ "mosn.io/mosn/pkg/upstream/healthcheck"
+	_ "mosn.io/mosn/pkg/xds"
+
+	_ "mosn.io/mosn/pkg/trace/sofa/http"
+	_ "mosn.io/mosn/pkg/trace/sofa/rpc"
+	_ "mosn.io/mosn/pkg/trace/sofa/rpc/ext"
 )
 
-var Version = "0.0.1"
+var Version = "0.4.0"
 
 func main() {
 	app := cli.NewApp()
 	app.Name = "mosn"
 	app.Version = Version
 	app.Compiled = time.Now()
-	app.Copyright = "(c) 2018 Ant Financial"
+	app.Copyright = "(c) " + strconv.Itoa(time.Now().Year()) + " Ant Financial"
 	app.Usage = "MOSN is modular observable smart netstub."
 
 	//commands

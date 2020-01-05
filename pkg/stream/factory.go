@@ -20,7 +20,7 @@ package stream
 import (
 	"context"
 
-	"github.com/alipay/sofa-mosn/pkg/types"
+	"mosn.io/mosn/pkg/types"
 )
 
 var streamFactories map[types.Protocol]ProtocolStreamFactory
@@ -41,4 +41,22 @@ func CreateServerStreamConnection(context context.Context, prot types.Protocol, 
 	}
 
 	return nil
+}
+
+func SelectStreamFactoryProtocol(ctx context.Context, prot string, peek []byte) (types.Protocol, error) {
+	var err error
+	var again bool
+	for p, factory := range streamFactories {
+		err = factory.ProtocolMatch(ctx, prot, peek)
+		if err == nil {
+			return p, nil
+		} else if err == EAGAIN {
+			again = true
+		}
+	}
+	if again {
+		return "", EAGAIN
+	} else {
+		return "", FAILED
+	}
 }

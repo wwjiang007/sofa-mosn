@@ -18,29 +18,23 @@
 package server
 
 import (
-	"errors"
 	"os"
 	"runtime"
 	"time"
 
-	"github.com/alipay/sofa-mosn/pkg/api/v2"
-	"github.com/alipay/sofa-mosn/pkg/log"
-	"github.com/alipay/sofa-mosn/pkg/network"
-	"github.com/alipay/sofa-mosn/pkg/types"
+	v2 "mosn.io/mosn/pkg/api/v2"
+	"mosn.io/mosn/pkg/buffer"
+	"mosn.io/mosn/pkg/config"
+	"mosn.io/mosn/pkg/log"
+	"mosn.io/mosn/pkg/network"
+	"mosn.io/mosn/pkg/server/keeper"
+	"mosn.io/mosn/pkg/types"
 )
-
-func init() {
-	onProcessExit = append(onProcessExit, func() {
-		if pidFile != "" {
-			os.Remove(pidFile)
-		}
-	})
-}
 
 // currently, only one server supported
 func GetServer() Server {
 	if len(servers) == 0 {
-		log.DefaultLogger.Errorf("Server is nil and hasn't been initiated at this time")
+		log.DefaultLogger.Errorf("[server] Server is nil and hasn't been initiated at this time")
 		return nil
 	}
 
@@ -51,40 +45,45 @@ var servers []*server
 
 type server struct {
 	serverName string
-	logger     log.Logger
+	logger     log.ErrorLogger
 	stopChan   chan struct{}
 	handler    types.ConnectionHandler
 }
 
-func NewServer(config *Config, cmFilter types.ClusterManagerFilter, clMng types.ClusterManager) Server {
-	procNum := runtime.NumCPU()
+func NewConfig(c *v2.ServerConfig) *Config {
+	return &Config{
+		ServerName:      c.ServerName,
+		LogPath:         c.DefaultLogPath,
+		LogLevel:        config.ParseLogLevel(c.DefaultLogLevel),
+		LogRoller:       c.GlobalLogRoller,
+		GracefulTimeout: c.GracefulTimeout.Duration,
+		Processor:       c.Processor,
+		UseNetpollMode:  c.UseNetpollMode,
+	}
+}
 
+func NewServer(config *Config, cmFilter types.ClusterManagerFilter, clMng types.ClusterManager) Server {
 	if config != nil {
 		//graceful timeout setting
 		if config.GracefulTimeout != 0 {
 			GracefulTimeout = config.GracefulTimeout
 		}
 
-		//processor num setting
-		if config.Processor > 0 {
-			procNum = config.Processor
-		}
-
 		network.UseNetpollMode = config.UseNetpollMode
 		if config.UseNetpollMode {
-			log.StartLogger.Infof("Netpoll mode enabled.")
+			log.StartLogger.Infof("[server] [reconfigure] [new server] Netpoll mode enabled.")
 		}
 	}
 
-	runtime.GOMAXPROCS(procNum)
+	runtime.GOMAXPROCS(config.Processor)
 
-	OnProcessShutDown(log.CloseAll)
+	keeper.OnProcessShutDown(log.CloseAll)
 
 	server := &server{
 		serverName: config.ServerName,
 		logger:     log.DefaultLogger,
 		stopChan:   make(chan struct{}),
-		handler:    NewHandler(cmFilter, clMng, log.DefaultLogger),
+		handler:    NewHandler(cmFilter, clMng),
 	}
 
 	initListenerAdapterInstance(server.serverName, server.handler)
@@ -146,33 +145,23 @@ func StopConnection() {
 	}
 }
 
-func ListListenerFD() []uintptr {
-	var fds []uintptr
+func ListListenersFile() []*os.File {
+	var files []*os.File
 	for _, server := range servers {
-		fds = append(fds, server.handler.ListListenersFD(nil)...)
+		files = append(files, server.handler.ListListenersFile(nil)...)
 	}
-	return fds
+	return files
 }
 
 func WaitConnectionsDone(duration time.Duration) error {
 	// one duration wait for connection to active close
 	// two duration wait for connection to transfer
-	// 10 seconds wait for read timeout
-	timeout := time.NewTimer(duration*2 + time.Second*10)
-	wait := make(chan struct{}, 1)
-	time.Sleep(duration)
-	go func() {
-		//todo close idle connections and wait active connections complete
-		StopConnection()
-		log.DefaultLogger.Infof("StopConnection")
-		time.Sleep(duration + time.Second*10)
-		wait <- struct{}{}
-	}()
-
+	// DefaultConnReadTimeout wait for read timeout
+	timeout := time.NewTimer(2*duration + 2*buffer.ConnReadTimeout)
+	StopConnection()
+	log.DefaultLogger.Infof("[server] StopConnection")
 	select {
 	case <-timeout.C:
-		return errors.New("wait timeout")
-	case <-wait:
 		return nil
 	}
 }
@@ -189,11 +178,18 @@ func InitDefaultLogger(config *Config) {
 
 	//use default log path
 	if logPath == "" {
-		logPath = MosnLogDefaultPath
+		logPath = types.MosnLogDefaultPath
+	}
+
+	if config.LogRoller != "" {
+		err := log.InitGlobalRoller(config.LogRoller)
+		if err != nil {
+			log.StartLogger.Fatalln("[server] [init] initialize default logger Roller failed : ", err)
+		}
 	}
 
 	err := log.InitDefaultLogger(logPath, logLevel)
 	if err != nil {
-		log.StartLogger.Fatalln("initialize default logger failed : ", err)
+		log.StartLogger.Fatalln("[server] [init] initialize default logger failed : ", err)
 	}
 }

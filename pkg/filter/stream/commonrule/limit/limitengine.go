@@ -20,8 +20,8 @@ package limit
 import (
 	"errors"
 
-	"github.com/alipay/sofa-mosn/pkg/filter/stream/commonrule/model"
-	"github.com/alipay/sofa-mosn/pkg/log"
+	"mosn.io/mosn/pkg/filter/stream/commonrule/model"
+	"mosn.io/mosn/pkg/log"
 )
 
 // LimitEngine limit

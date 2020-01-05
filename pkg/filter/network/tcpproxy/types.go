@@ -18,7 +18,7 @@
 package tcpproxy
 
 import (
-	"github.com/alipay/sofa-mosn/pkg/types"
+	"mosn.io/mosn/pkg/types"
 )
 
 // Proxy

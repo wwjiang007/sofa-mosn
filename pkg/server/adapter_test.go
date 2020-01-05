@@ -1,276 +1,372 @@
-/*
- * Licensed to the Apache Software Foundation (ASF) under one or more
- * contributor license agreements.  See the NOTICE file distributed with
- * this work for additional information regarding copyright ownership.
- * The ASF licenses this file to You under the Apache License, Version 2.0
- * (the "License"); you may not use this file except in compliance with
- * the License.  You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
-
 package server
 
 import (
-	"fmt"
+	"context"
+	"crypto/tls"
+	"io"
 	"net"
-	"sync"
+	"reflect"
 	"testing"
 	"time"
 
-	"github.com/alipay/sofa-mosn/pkg/api/v2"
-	"github.com/alipay/sofa-mosn/pkg/log"
-	"github.com/alipay/sofa-mosn/pkg/types"
-	"github.com/alipay/sofa-mosn/pkg/upstream/cluster"
+	"mosn.io/mosn/pkg/api/v2"
+	"mosn.io/mosn/pkg/buffer"
+	"mosn.io/mosn/pkg/log"
+	"mosn.io/mosn/pkg/network"
+	"mosn.io/mosn/pkg/types"
 )
 
-type clusterManagerFilterMocK struct {
-	cccb types.ClusterConfigFactoryCb
-	chcb types.ClusterHostFactoryCb
+const testServerName = "test_server"
+
+func setup() {
+	handler := NewHandler(&mockClusterManagerFilter{}, &mockClusterManager{})
+	initListenerAdapterInstance(testServerName, handler)
 }
 
-func (cmf *clusterManagerFilterMocK) OnCreated(cccb types.ClusterConfigFactoryCb, chcb types.ClusterHostFactoryCb) {
-	cmf.cccb = cccb
-	cmf.chcb = chcb
-}
-
-var srvAddresses = []string{"127.0.0.1:8080", "127.0.0.1:8081", "127.0.0.1:8082"}
-var clnAddresses = []string{"127.0.0.1:9090", "127.0.0.1:9091", "127.0.0.1:9092"}
-
-var once sync.Once
-var stopServerChan = make(chan bool, 1)
-
-func runMockServer(t *testing.T) {
-	once.Do(func() {
-
-		address, err := net.ResolveTCPAddr("tcp", srvAddresses[0])
-		if err != nil {
-			t.Errorf("resolve tcp address error, address = %s", address)
-		}
-
-		mockConfig := &Config{
-			ServerName: "mock_server_1",
-			LogPath:    "",
-			LogLevel:   log.DEBUG,
-		}
-
-		log.InitDefaultLogger(mockConfig.LogPath, mockConfig.LogLevel)
-
-		cmf := &clusterManagerFilterMocK{}
-		cm := cluster.NewClusterManager(nil, nil, nil, true, false)
-		mockServer := NewServer(mockConfig, cmf, cm)
-
-		listenConfig := &v2.Listener{
-			ListenerConfig: v2.ListenerConfig{
-				Name:       "listener1",
-				BindToPort: true,
-				LogPath:    "stdout",
-				HandOffRestoredDestinationConnections: true,
-			},
-			Addr: address,
-			PerConnBufferLimitBytes: 1 << 15,
-			LogLevel:                3,
-		}
-
-		mockServer.AddListener(listenConfig, nil, nil)
-		mockServer.Start()
-
-		for {
-			select {
-			case <-stopServerChan:
-				mockServer.Close()
-			}
-		}
-	})
-}
-
-func runMockClientConnect(clientAddress string, serverAddress string) (net.Conn, error) {
-	localTCPAddr, err1 := net.ResolveTCPAddr("tcp", clientAddress)
-	if err1 != nil {
-		return nil, fmt.Errorf("resolve tcp address error, clientaddress = %s", clientAddress)
+func tearDown() {
+	for _, handler := range listenerAdapterInstance.connHandlerMap {
+		handler.StopListeners(context.Background(), true)
 	}
-
-	remoteTCPAddr, err2 := net.ResolveTCPAddr("tcp", serverAddress)
-
-	if err2 != nil {
-		return nil, fmt.Errorf("resolve tcp address error, clientaddress = %s, server", serverAddress)
-	}
-
-	conn, err := net.DialTCP("tcp", localTCPAddr, remoteTCPAddr)
-	return conn, err
 }
 
-func TestListenerAdapter_AddOrUpdateListener(t *testing.T) {
-	go runMockServer(t)
-	time.Sleep(1 * time.Second) // wait server start
+func TestMain(m *testing.M) {
+	setup()
+	m.Run()
+	tearDown()
+}
 
-	serverAddress := srvAddresses[1]
-	localTCPAddr := clnAddresses[0]
-	addedAddress, _ := net.ResolveTCPAddr("tcp", serverAddress) //added server
-
-	addedListenerConfig := &v2.Listener{
+func baseListenerConfig(addrStr string, name string) *v2.Listener {
+	// add a new listener
+	addr, _ := net.ResolveTCPAddr("tcp", addrStr)
+	return &v2.Listener{
 		ListenerConfig: v2.ListenerConfig{
-			Name:       "listener2",
+			Name:       name,
 			BindToPort: true,
-			LogPath:    "stdout",
-			HandOffRestoredDestinationConnections: true,
+			FilterChains: []v2.FilterChain{
+				{
+					FilterChainConfig: v2.FilterChainConfig{
+						Filters: []v2.Filter{
+							{
+								Type: "network",
+								Config: map[string]interface{}{
+									"network": "exists",
+								},
+							}, // no network filter parsed, but the config still exists for test
+						},
+					},
+					TLSContexts: []v2.TLSConfig{
+						v2.TLSConfig{
+							Status:     true,
+							CACert:     mockCAPEM,
+							CertChain:  mockCertPEM,
+							PrivateKey: mockKeyPEM,
+						},
+					},
+				},
+			},
+			StreamFilters: []v2.Filter{
+				{
+					Type: "stream",
+					Config: map[string]interface{}{
+						"stream": "exists",
+					},
+				},
+			}, //no stream filters parsed, but the config still exists for test
 		},
-		Addr: addedAddress,
+		Addr: addr,
 		PerConnBufferLimitBytes: 1 << 15,
-		LogLevel:                3,
-	}
-
-	updateListenerConfig := &v2.Listener{
-		ListenerConfig: v2.ListenerConfig{
-			Name:       "listener2",
-			BindToPort: false,
-			LogPath:    "stdout",
-			HandOffRestoredDestinationConnections: true,
-		},
-		Addr: addedAddress,
-		PerConnBufferLimitBytes: 1 << 15,
-		LogLevel:                3,
-	}
-
-	type fields struct {
-		connHandlerMap     map[string]types.ConnectionHandler
-		defaultConnHandler types.ConnectionHandler
-	}
-	type args struct {
-		serverName             string
-		lc                     *v2.Listener
-		networkFiltersFactory  []types.NetworkFilterChainFactory
-		streamFiltersFactories []types.StreamFilterChainFactory
-	}
-	tests := []struct {
-		name    string
-		fields  fields
-		args    args
-		wantErr bool
-	}{
-		{
-			name: "testListenerAdd",
-			fields: fields{
-				connHandlerMap:     GetListenerAdapterInstance().connHandlerMap,
-				defaultConnHandler: GetListenerAdapterInstance().defaultConnHandler,
-			},
-			args: args{
-				serverName: "",
-				lc:         addedListenerConfig,
-				networkFiltersFactory:  nil,
-				streamFiltersFactories: nil,
-			},
-			wantErr: false,
-		},
-		{
-			name: "testListenerUpdate",
-			fields: fields{
-				connHandlerMap:     GetListenerAdapterInstance().connHandlerMap,
-				defaultConnHandler: GetListenerAdapterInstance().defaultConnHandler,
-			},
-			args: args{
-				serverName: "",
-				lc:         updateListenerConfig,
-				networkFiltersFactory:  nil,
-				streamFiltersFactories: nil,
-			},
-			wantErr: false,
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-
-			adapter := &ListenerAdapter{
-				connHandlerMap:     tt.fields.connHandlerMap,
-				defaultConnHandler: tt.fields.defaultConnHandler,
-			}
-
-			if tt.name == "testListenerAdd" {
-				// expect connect failure
-				if adapter.defaultConnHandler.FindListenerByName("listener2") != nil {
-					t.Errorf("listener = %s already in", srvAddresses[0])
-				}
-
-				if conn, err := runMockClientConnect(localTCPAddr, srvAddresses[1]); err == nil {
-					t.Errorf("listener = %s already running, need check ", srvAddresses[1])
-					conn.Close()
-				}
-
-				// do listener start
-				if err := adapter.AddOrUpdateListener(tt.args.serverName, tt.args.lc, tt.args.networkFiltersFactory, tt.args.streamFiltersFactories); (err != nil) != tt.wantErr {
-					t.Errorf("ListenerAdapter.AddOrUpdateListener() error = %v, wantErr %v", err, tt.wantErr)
-				}
-
-				time.Sleep(1 * time.Second) // wait listener start
-
-				// expect connect success
-				if adapter.defaultConnHandler.FindListenerByName("listener2") == nil {
-					t.Errorf("listener = %s add listener error", srvAddresses[0])
-				}
-
-				if conn, err := runMockClientConnect(localTCPAddr, srvAddresses[1]); err != nil {
-					t.Errorf("ListenerAdapter.AddOrUpdateListener() error = %v, wantErr %v", err, tt.wantErr)
-
-				} else {
-					conn.Close()
-				}
-			}
-
-			if tt.name == "testListenerUpdate" {
-				if err := adapter.AddOrUpdateListener(tt.args.serverName, tt.args.lc, tt.args.networkFiltersFactory, tt.args.streamFiltersFactories); (err != nil) != tt.wantErr {
-					t.Errorf("ListenerAdapter.AddOrUpdateListener() error = %v, wantErr %v", err, tt.wantErr)
-				}
-
-				if listener := adapter.defaultConnHandler.FindListenerByName("listener2"); listener == nil {
-					t.Errorf("testListenerUpdate error, listener don't exist")
-				} else if listener.Config() != updateListenerConfig {
-					t.Errorf("testListenerUpdate error, config remain the same")
-				}
-			}
-		})
 	}
 }
 
-func TestListenerAdapter_DeleteListener(t *testing.T) {
-	go runMockServer(t)
-	time.Sleep(1 * time.Second) // wait server start
-
-	adapter := &ListenerAdapter{
-		connHandlerMap:     GetListenerAdapterInstance().connHandlerMap,
-		defaultConnHandler: GetListenerAdapterInstance().defaultConnHandler,
+// LDS include add\update\delete listener
+func TestLDS(t *testing.T) {
+	addrStr := "127.0.0.1:8080"
+	name := "listener1"
+	listenerConfig := baseListenerConfig(addrStr, name)
+	// set a network filter do nothing, just for keep the connection not close
+	nfcfs := []types.NetworkFilterChainFactory{
+		&mockNetworkFilterFactory{},
 	}
-
-	// expect connect success
-	if adapter.defaultConnHandler.FindListenerByName("listener1") == nil {
-		t.Errorf("listener = %s doesn't start ", srvAddresses[0])
+	if err := GetListenerAdapterInstance().AddOrUpdateListener(testServerName, listenerConfig, nfcfs, nil); err != nil {
+		t.Fatalf("add a new listener failed %v", err)
 	}
-
-	if conn, err := runMockClientConnect(clnAddresses[1], srvAddresses[0]); err != nil {
-		t.Errorf("ListenerAdapter.DeleteListener() error = %s ", err.Error())
+	time.Sleep(time.Second) // wait listener start
+	// verify
+	// add listener success
+	handler := listenerAdapterInstance.defaultConnHandler.(*connHandler)
+	if len(handler.listeners) != 1 {
+		t.Fatalf("listener numbers is not expected %d", len(handler.listeners))
+	}
+	ln := handler.FindListenerByName(name)
+	if ln == nil {
+		t.Fatal("no listener found")
+	}
+	// use real connection to test
+	// tls handshake success
+	dialer := &net.Dialer{
+		Timeout: time.Second,
+	}
+	if conn, err := tls.DialWithDialer(dialer, "tcp", addrStr, &tls.Config{
+		InsecureSkipVerify: true,
+	}); err != nil {
+		t.Fatal("dial tls failed", err)
 	} else {
 		conn.Close()
 	}
-
-	// delete the listener
-	if err := adapter.DeleteListener("", "listener1"); err != nil {
-		t.Errorf("ListenerAdapter.DeleteListener() error = %v", err.Error())
+	// update listener
+	// FIXME: update logger
+	newListenerConfig := &v2.Listener{
+		ListenerConfig: v2.ListenerConfig{
+			Name: name, // name should same as the exists listener
+			AccessLogs: []v2.AccessLog{
+				{},
+			},
+			FilterChains: []v2.FilterChain{
+				{
+					FilterChainConfig: v2.FilterChainConfig{
+						Filters: []v2.Filter{}, // network filter will not be updated
+					},
+					TLSContexts: []v2.TLSConfig{ // only tls will be updated
+						{
+							Status: false,
+						},
+					},
+				},
+			},
+			StreamFilters: []v2.Filter{}, // stream filter will not be updated
+			Inspector:     true,
+		},
+		Addr: listenerConfig.Addr, // addr should not be changed
+		PerConnBufferLimitBytes: 1 << 10,
 	}
-
-	if adapter.defaultConnHandler.FindListenerByName("listener1") != nil {
-		t.Errorf("listener = %s doesn't stop ", srvAddresses[0])
+	if err := GetListenerAdapterInstance().AddOrUpdateListener(testServerName, newListenerConfig, nil, nil); err != nil {
+		t.Fatal("update listener failed", err)
 	}
+	// verify
+	// 1. listener have only 1
+	if len(handler.listeners) != 1 {
+		t.Fatalf("listener numbers is not expected %d", len(handler.listeners))
+	}
+	// 2. verify config, the updated configs should be changed, and the others should be same as old config
+	newLn := handler.FindListenerByName(name)
+	cfg := newLn.Config()
+	if !(reflect.DeepEqual(cfg.FilterChains[0].TLSContexts[0], newListenerConfig.FilterChains[0].TLSContexts[0]) && //tls is new
+		cfg.PerConnBufferLimitBytes == 1<<10 && // PerConnBufferLimitBytes is new
+		cfg.Inspector && // inspector is new
+		reflect.DeepEqual(cfg.FilterChains[0].Filters, listenerConfig.FilterChains[0].Filters) && // network filter is old
+		reflect.DeepEqual(cfg.StreamFilters, listenerConfig.StreamFilters)) { // stream filter is old
+		// FIXME: log config is new
+		t.Fatal("new config is not expected")
+	}
+	// FIXME:
+	// Logger level is new
 
-	time.Sleep(3 * time.Second)
-
-	// expect connect failure
-	if conn, err := runMockClientConnect(clnAddresses[2], srvAddresses[0]); err == nil {
-		t.Errorf("listener = %s doesn't stop ", srvAddresses[0])
+	// 3. tls handshake should be failed, because tls is changed to false
+	if conn, err := tls.DialWithDialer(dialer, "tcp", addrStr, &tls.Config{
+		InsecureSkipVerify: true,
+	}); err == nil {
 		conn.Close()
+		t.Fatal("listener should not be support tls any more")
+	}
+	// 4.common connection should be success, network filter will not be changed
+	if conn, err := net.DialTimeout("tcp", addrStr, time.Second); err != nil {
+		t.Fatal("dial listener failed", err)
+	} else {
+		conn.Close()
+	}
+	// test delete listener
+	if err := GetListenerAdapterInstance().DeleteListener(testServerName, name); err != nil {
+		t.Fatal("delete listener failed", err)
+	}
+	time.Sleep(time.Second) // wait listener close
+	if len(handler.listeners) != 0 {
+		t.Fatal("handler still have listener")
+	}
+	// dial should be failed
+	if conn, err := net.DialTimeout("tcp", addrStr, time.Second); err == nil {
+		conn.Close()
+		t.Fatal("listener closed, dial should be failed")
+	}
+}
+
+func TestUpdateTLS(t *testing.T) {
+	addrStr := "127.0.0.1:8081"
+	name := "listener2"
+	listenerConfig := baseListenerConfig(addrStr, name)
+	// set a network filter do nothing, just for keep the connection not close
+	nfcfs := []types.NetworkFilterChainFactory{
+		&mockNetworkFilterFactory{},
+	}
+	if err := GetListenerAdapterInstance().AddOrUpdateListener(testServerName, listenerConfig, nfcfs, nil); err != nil {
+		t.Fatalf("add a new listener failed %v", err)
+	}
+	time.Sleep(time.Second) // wait listener start
+	tlsCfg := v2.TLSConfig{
+		Status: false,
+	}
+	// tls handleshake success
+	dialer := &net.Dialer{
+		Timeout: time.Second,
+	}
+	if conn, err := tls.DialWithDialer(dialer, "tcp", addrStr, &tls.Config{
+		InsecureSkipVerify: true,
+	}); err != nil {
+		t.Fatal("dial tls failed", err)
+	} else {
+		conn.Close()
+	}
+	if err := GetListenerAdapterInstance().UpdateListenerTLS(testServerName, name, false, []v2.TLSConfig{tlsCfg}); err != nil {
+		t.Fatalf("update tls listener failed %v", err)
+	}
+	handler := listenerAdapterInstance.defaultConnHandler.(*connHandler)
+	newLn := handler.FindListenerByName(name)
+	cfg := newLn.Config()
+	// verify tls changed
+	if !(reflect.DeepEqual(cfg.FilterChains[0].TLSContexts[0], tlsCfg) &&
+		cfg.Inspector == false) {
+		t.Fatal("update tls config not expected")
+	}
+	// tls handshake should be failed, because tls is changed to false
+	if conn, err := tls.DialWithDialer(dialer, "tcp", addrStr, &tls.Config{
+		InsecureSkipVerify: true,
+	}); err == nil {
+		conn.Close()
+		t.Fatal("listener should not be support tls any more")
+	}
+}
+
+func TestIdleTimeoutAndUpdate(t *testing.T) {
+	defer func() {
+		buffer.ConnReadTimeout = types.DefaultConnReadTimeout
+		defaultIdleTimeout = network.DefaultIdleTimeout
+	}()
+	log.DefaultLogger.SetLogLevel(log.DEBUG)
+	buffer.ConnReadTimeout = time.Second
+	defaultIdleTimeout = 3 * time.Second
+	addrStr := "127.0.0.1:8082"
+	name := "listener3"
+	// bas listener config have no idle timeout config, set the default value
+	listenerConfig := baseListenerConfig(addrStr, name)
+	nfcfs := []types.NetworkFilterChainFactory{
+		&mockNetworkFilterFactory{},
+	}
+	if err := GetListenerAdapterInstance().AddOrUpdateListener(testServerName, listenerConfig, nfcfs, nil); err != nil {
+		t.Fatalf("add a new listener failed %v", err)
+	}
+	time.Sleep(time.Second) // wait listener start
+
+	// 0. test default idle timeout
+	func() {
+		n := time.Now()
+		conn, err := tls.Dial("tcp", addrStr, &tls.Config{
+			InsecureSkipVerify: true,
+		})
+		if err != nil {
+			t.Fatalf("dial failed, %v", err)
+		}
+		readChan := make(chan error)
+		// try read
+		go func() {
+			buf := make([]byte, 10)
+			_, err := conn.Read(buf)
+			readChan <- err
+		}()
+		select {
+		case err := <-readChan:
+			// connection should be closed by server
+			if err != io.EOF {
+				t.Fatalf("connection read returns error: %v", err)
+			}
+			if time.Now().Sub(n) < defaultIdleTimeout {
+				t.Fatal("connection closed too quickly")
+			}
+		case <-time.After(5 * time.Second):
+			conn.Close()
+			t.Fatal("connection should be closed, but not")
+		}
+	}()
+	// Update idle timeout
+	// 1. update as no idle timeout
+	noIdle := baseListenerConfig(addrStr, name)
+	noIdle.ConnectionIdleTimeout = &v2.DurationConfig{
+		Duration: 0,
+	}
+	if err := GetListenerAdapterInstance().AddOrUpdateListener(testServerName, noIdle, nil, nil); err != nil {
+		t.Fatalf("update listener failed, %v", err)
+	}
+	func() {
+		conn, err := tls.Dial("tcp", addrStr, &tls.Config{
+			InsecureSkipVerify: true,
+		})
+		if err != nil {
+			t.Fatalf("dial failed, %v", err)
+		}
+		readChan := make(chan error)
+		// try read
+		go func() {
+			buf := make([]byte, 10)
+			_, err := conn.Read(buf)
+			readChan <- err
+		}()
+		select {
+		case err := <-readChan:
+			t.Fatalf("receive an error: %v", err)
+		case <-time.After(5 * time.Second):
+			conn.Close()
+		}
+
+	}()
+	// 2. update idle timeout with config
+	cfgIdle := baseListenerConfig(addrStr, name)
+	cfgIdle.ConnectionIdleTimeout = &v2.DurationConfig{
+		Duration: 5 * time.Second,
+	}
+	if err := GetListenerAdapterInstance().AddOrUpdateListener(testServerName, cfgIdle, nil, nil); err != nil {
+		t.Fatalf("update listener failed, %v", err)
+	}
+	func() {
+		n := time.Now()
+		conn, err := tls.Dial("tcp", addrStr, &tls.Config{
+			InsecureSkipVerify: true,
+		})
+		if err != nil {
+			t.Fatalf("dial failed, %v", err)
+		}
+		readChan := make(chan error)
+		// try read
+		go func() {
+			buf := make([]byte, 10)
+			_, err := conn.Read(buf)
+			readChan <- err
+		}()
+		select {
+		case err := <-readChan:
+			// connection should be closed by server
+			if err != io.EOF {
+				t.Fatalf("connection read returns error: %v", err)
+			}
+			if time.Now().Sub(n) < 5*time.Second {
+				t.Fatal("connection closed too quickly")
+			}
+		case <-time.After(8 * time.Second):
+			conn.Close()
+			t.Fatal("connection should be closed, but not")
+		}
+	}()
+
+}
+
+func TestFindListenerByName(t *testing.T) {
+	addrStr := "127.0.0.1:8083"
+	name := "listener4"
+	cfg := baseListenerConfig(addrStr, name)
+	if ln := GetListenerAdapterInstance().FindListenerByName(testServerName, name); ln != nil {
+		t.Fatal("find listener name failed, expected not found")
+	}
+	if err := GetListenerAdapterInstance().AddOrUpdateListener(testServerName, cfg, nil, nil); err != nil {
+		t.Fatalf("update listener failed, %v", err)
+	}
+	if ln := GetListenerAdapterInstance().FindListenerByName(testServerName, name); ln == nil {
+		t.Fatal("expected find listener, but not")
 	}
 }
