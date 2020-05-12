@@ -34,7 +34,6 @@ type ContentKey string
 
 var ProtocolsSupported = map[string]bool{
 	string(protocol.Auto):      true,
-	string(protocol.SofaRPC):   true,
 	string(protocol.HTTP1):     true,
 	string(protocol.HTTP2):     true,
 	string(protocol.Xprotocol): true,
@@ -247,6 +246,22 @@ func ParseServerConfig(c *v2.ServerConfig) *v2.ServerConfig {
 		}
 	}
 	return c
+}
+
+// GetListenerFilters returns a listener filter factory by filter.Type
+func GetListenerFilters(configs []v2.Filter) []api.ListenerFilterChainFactory {
+	var factories []api.ListenerFilterChainFactory
+
+	for _, c := range configs {
+		sfcc, err := api.CreateListenerFilterChainFactory(c.Type, c.Config)
+		if err != nil {
+			log.DefaultLogger.Errorf("[config] get listener filter failed, type: %s, error: %v", c.Type, err)
+			continue
+		}
+		factories = append(factories, sfcc)
+	}
+
+	return factories
 }
 
 // GetStreamFilters returns a stream filter factory by filter.Type

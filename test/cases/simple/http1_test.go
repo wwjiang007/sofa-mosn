@@ -1,3 +1,5 @@
+// +build MOSNTest
+
 package simple
 
 import (
@@ -71,34 +73,34 @@ const ConfigSimpleHTTP1 = `{
                 {
                         "default_log_path":"stdout",
                         "default_log_level": "FATAL",
-			"routers": [
-				{
-					"router_config_name":"router_to_mosn",
-					"virtual_hosts":[{
-						"name":"mosn_hosts",
-						"domains": ["*"],
-						"routers": [
-							{
-								"match":{"prefix":"/"},
-								"route":{"cluster_name":"mosn_cluster"}
-							}
-						]
-					}]
-				},
-				{
-					"router_config_name":"router_to_server",
-					"virtual_hosts":[{
-						"name":"server_hosts",
-						"domains": ["*"],
-						"routers": [
-							{
-								"match":{"prefix":"/"},
-								"route":{"cluster_name":"server_cluster"}
-							}
-						]
-					}]
-				}
-			],
+                        "routers": [
+                                {
+                                        "router_config_name":"router_to_mosn",
+                                        "virtual_hosts":[{
+                                                "name":"mosn_hosts",
+                                                "domains": ["*"],
+                                                "routers": [
+                                                        {
+                                                                "match":{"prefix":"/"},
+                                                                "route":{"cluster_name":"mosn_cluster"}
+                                                        }
+                                                ]
+                                        }]
+                                },
+                                {
+                                        "router_config_name":"router_to_server",
+                                        "virtual_hosts":[{
+                                                "name":"server_hosts",
+                                                "domains": ["*"],
+                                                "routers": [
+                                                        {
+                                                                "match":{"prefix":"/"},
+                                                                "route":{"cluster_name":"server_cluster"}
+                                                        }
+                                                ]
+                                        }]
+                                }
+                        ],
                         "listeners":[
                                 {
                                         "address":"127.0.0.1:2045",
